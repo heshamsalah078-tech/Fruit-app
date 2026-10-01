@@ -257,14 +257,21 @@ document.addEventListener("click",function(e){
     cart={};toast("تم تأكيد طلبك");go("orders")}
   else if(t.id==="pNew"){editingP=0;draw()}
   else if(d.pe){editingP=Number(d.pe);draw()}
-  else if(d.pd){if(confirm("هل تريد حذف هذا المنتج؟")){P=P.filter(function(p){return p.id!==Number(d.pd)});delete cart[d.pd];toast("تم حذف المنتج");draw()}}
+  else if(d.pd){if(confirm("هل تريد حذف هذا المنتج؟")){var pid=Number(d.pd);P=P.filter(function(p){return p.id!==pid});delete cart[pid];toast("تم حذف المنتج");draw();apiCall("DELETE","/products/"+pid).catch(function(){})}}
   else if(t.id==="pCancel"){editingP=null;draw()}
   else if(t.id==="pSave"){
     var nn=$("pName").value.trim(),pp=Number($("pPrice").value),uu=$("pUnit").value,cc=$("pCat").value,ii=$("pImg").value.trim(),ee=$("pEmoji").value.trim()||"🥬";
     if(!nn||!pp||pp<=0){toast("أدخل اسم المنتج وسعرًا صحيحًا");return}
-    if(editingP===0){P.push({id:nextPid,n:nn,e:ee,img:ii,p:pp,u:uu,c:cc});nextPid++;toast("تمت إضافة المنتج")}
-    else{var tgt=P.find(function(x){return x.id===editingP});tgt.n=nn;tgt.p=pp;tgt.u=uu;tgt.c=cc;tgt.img=ii;tgt.e=ee;toast("تم حفظ التعديل")}
-    editingP=null;draw()}
+    if(editingP===0){
+      var tempId=nextPid;P.push({id:tempId,n:nn,e:ee,img:ii,p:pp,u:uu,c:cc});nextPid++;toast("تمت إضافة المنتج");editingP=null;draw();
+      apiCall("POST","/products",{name:nn,emoji:ee,image_url:ii,price:pp,unit:uu,category:cc}).then(function(r){
+        if(r&&r.id){var it=P.find(function(x){return x.id===tempId});if(it)it.id=r.id;nextPid=pMax()+1;draw()}
+      }).catch(function(){})
+    }else{
+      var tgt=P.find(function(x){return x.id===editingP});tgt.n=nn;tgt.p=pp;tgt.u=uu;tgt.c=cc;tgt.img=ii;tgt.e=ee;toast("تم حفظ التعديل");
+      apiCall("PUT","/products/"+editingP,{name:nn,emoji:ee,image_url:ii,price:pp,unit:uu,category:cc}).catch(function(){});
+      editingP=null;draw()
+    }}
   else if(t.id==="reg"){
     var n1=$("rName").value.trim(),p1=$("rPhone").value.trim(),a1=$("rAddr").value.trim();
     if(!n1||p1.replace(/\D/g,"").length<10||!a1){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
