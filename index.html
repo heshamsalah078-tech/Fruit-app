@@ -149,8 +149,9 @@ function acctV(){
   $("acct").innerHTML='<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
 var DB={customers:[],orders:[]}; // simulated database tables
 var API=location.hostname.indexOf("railway.app")>-1?"":"https://fruit-app-production.up.railway.app";
-function apiCall(m,u,b){return fetch(API+u,{method:m,headers:{"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()})}
-function dbSaveCustomer(c){apiCall("POST","/customers/register",{name:c.name,phone:c.phone,address:c.addr}).then(function(r){if(r&&r.id){me.id=r.id;saveMe()}}).catch(function(){})}
+var TOK="",ROLE="";try{TOK=localStorage.getItem("sf_tok")||"";ROLE=localStorage.getItem("sf_role")||""}catch(x){}
+function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){logout();}return r.json()})}
+function dbSaveCustomer(c){}
 function dbSaveOrder(o){if(!me.id)return;apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).catch(function(){})}
 fetch(API+"/products").then(function(r){return r.json()}).then(function(a){if(a&&a.length){P=a.map(function(x){return {id:x.id,n:x.name,e:x.emoji,img:x.image_url||"",p:Number(x.price),u:x.unit,c:x.category}});nextPid=pMax()+1;draw()}}).catch(function(){});
 var CATS=["الكل","خضار","فواكه","ورقيات"],cat="الكل",cart={},orders=[],friends=2,used=0;
@@ -280,8 +281,41 @@ document.addEventListener("click",function(e){
   else if(t.id==="copy"){try{navigator.clipboard.writeText($("rc").textContent)}catch(x){}toast("تم نسخ الكود")}
   else if(t.id==="sim"){if(friends<CAP){friends++;toast("تمت إضافة "+money(REWARD)+" إلى رصيدك");draw()}}
 });
-hello();
-if(!me.phone)go("acct");else draw();
+
+/* ===== AUTH ===== */
+var amode="login";
+var AROLES={customer:["acct","shop","cart","orders","ref"],prep:["store"],delivery:["driver"],admin:["acct","shop","cart","orders","store","driver","ref","admin"]};
+function authBox(){var el=$("auth");if(!el){el=document.createElement("div");el.id="auth";el.style.cssText="position:fixed;inset:0;z-index:99;background:var(--bg,#f6f8f4);overflow:auto;padding:24px 18px;direction:rtl";document.body.appendChild(el)}return el}
+function authV(){
+  var el=authBox();if(TOK){el.style.display="none";return}el.style.display="block";
+  var tb=function(m,t){return '<button class="chip'+(amode===m?' on':'')+'" data-am="'+m+'" style="flex:1">'+t+'</button>'};
+  var f='<input id="aPhone" placeholder="رقم الموبايل" inputmode="tel" style="'+INP+'">'+'<input id="aPass" type="password" placeholder="كلمة السر" style="'+INP+'">';
+  if(amode==="signup")f='<input id="aName" placeholder="الاسم" style="'+INP+'">'+f+'<input id="aAddr" placeholder="عنوان التوصيل" style="'+INP+'">';
+  el.innerHTML='<h1 style="text-align:center;margin:10px 0">🥬 سوق الطازج</h1><div style="display:flex;gap:6px;margin:14px 0">'+tb("login","دخول")+tb("signup","حساب جديد")+tb("staff","دخول موظف")+'</div><div class="card">'+f+'<button class="big" id="aGo" style="width:100%;margin-top:10px">'+(amode==="signup"?"تسجيل":"دخول")+'</button><p id="aErr" style="color:#c0392b;margin:8px 0 0"></p></div>';
+}
+function applyRole(){
+  var ok=AROLES[ROLE]||[];
+  document.querySelectorAll("nav button").forEach(function(b){b.style.display=ok.indexOf(b.dataset.t)>-1?"":"none"});
+  document.querySelectorAll("section").forEach(function(sx){if(ok.indexOf(sx.id)<0)sx.classList.remove("on")});
+}
+function startApp(){authV();if(!TOK)return;applyRole();hello();draw();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
+function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}authV()}
+function authDone(r,role){TOK=r.token;ROLE=role;var u=r.customer||r.staff;me={id:u.id,name:u.name,phone:u.phone||"",addr:u.address||""};try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}startApp()}
+document.addEventListener("click",function(e){
+  var t=e.target.closest("button");if(!t)return;
+  if(t.dataset.am){amode=t.dataset.am;authV();return}
+  if(t.id==="aGo"){
+    var ph=$("aPhone").value.trim(),pw=$("aPass").value,er=$("aErr");er.textContent="";
+    if(!ph||pw.length<6){er.textContent="أدخل رقم الموبايل وكلمة سر (6 أحرف على الأقل)";return}
+    var url="/auth/login",body={phone:ph,password:pw};
+    if(amode==="staff")url="/auth/staff-login";
+    if(amode==="signup"){var nm=$("aName").value.trim(),ad=$("aAddr").value.trim();if(!nm||!ad){er.textContent="أكمل كل البيانات";return}url="/auth/signup";body={name:nm,phone:ph,address:ad,password:pw}}
+    t.disabled=true;
+    apiCall("POST",url,body).then(function(r){t.disabled=false;if(r.token)authDone(r,amode==="staff"?r.staff.role:"customer");else er.textContent=r.message||"حدث خطأ، حاول مرة أخرى"}).catch(function(){t.disabled=false;er.textContent="تعذّر الاتصال بالخادم"})
+  }else if(t.id==="lo"){logout()}
+});
+var _draw=draw;draw=function(){_draw();var a=$("acct");if(TOK&&a&&!a.querySelector("#lo"))a.insertAdjacentHTML("beforeend",'<div style="padding:12px"><button class="chip" id="lo">🚪 تسجيل الخروج</button></div>')};
+startApp();
 </script>
 </body>
 </html>
