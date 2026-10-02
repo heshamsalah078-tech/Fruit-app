@@ -133,16 +133,31 @@ app.post('/auth/staff-login', async (req, res) => {
 
 // Admin creates a staff account (prep, delivery, or another admin)
 app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
-  const { name, phone, password, role } = req.body;
-  if (!['prep', 'delivery', 'admin'].includes(role)) {
-    return res.status(400).json({ error: 'invalid_role' });
+  const { name, phone, password, role, job_title } = req.body;
+  if (!['prep', 'delivery', 'admin'].includes(role) || !name || !phone || !password || password.length < 6) {
+    return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
   }
+  const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
+  if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
   const hash = await bcrypt.hash(password, 10);
   const r = await pool.query(
-    'INSERT INTO staff (name, phone, password_hash, role) VALUES ($1,$2,$3,$4) RETURNING id, name, phone, role',
-    [name, phone, hash, role]
+    'INSERT INTO staff (name, phone, password_hash, role, job_title) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, phone, role, job_title',
+    [name, phone, hash, role, job_title || null]
   );
   res.json(r.rows[0]);
+});
+
+// Admin edits a staff member (name, job title, role, optional new password)
+app.patch('/staff/:id', requireAuth('admin'), async (req, res) => {
+  const { name, job_title, role, password } = req.body;
+  if (!['prep', 'delivery', 'admin'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
+  if (Number(req.params.id) === req.user.id && role !== 'admin') return res.status(400).json({ error: 'self' });
+  await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3 WHERE id=$4', [name, job_title || null, role, req.params.id]);
+  if (password) {
+    if (password.length < 6) return res.status(400).json({ error: 'short_password' });
+    await pool.query('UPDATE staff SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(password, 10), req.params.id]);
+  }
+  res.json({ ok: true });
 });
 
 app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
@@ -156,7 +171,7 @@ app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
 
 // Admin: staff list + activate/deactivate
 app.get('/staff-list', requireAuth('admin'), async (req, res) => {
-  const r = await pool.query('SELECT id, name, phone, role, active FROM staff ORDER BY id');
+  const r = await pool.query('SELECT id, name, phone, role, job_title, active FROM staff ORDER BY id');
   res.json(r.rows);
 });
 app.patch('/staff/:id/active', requireAuth('admin'), async (req, res) => {
@@ -210,24 +225,41 @@ app.get('/orders/customer/:id', requireAuth('customer', 'admin'), async (req, re
   res.json(r.rows);
 });
 
+// Helper: attach line items to a list of orders
+async function withItems(orders) {
+  if (!orders.length) return orders;
+  const ids = orders.map(o => o.id);
+  const items = await pool.query(
+    `SELECT oi.*, p.name, p.emoji, p.unit FROM order_items oi
+     JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ANY($1)`,
+    [ids]
+  );
+  const byOrder = {};
+  for (const it of items.rows) { (byOrder[it.order_id] = byOrder[it.order_id] || []).push(it); }
+  return orders.map(o => ({ ...o, items: byOrder[o.id] || [] }));
+}
+
+// Prep staff (and admin, view-only): orders waiting to be prepared
 app.get('/orders/staff/prep', requireAuth('prep', 'admin'), async (req, res) => {
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
      FROM orders o JOIN customers c ON c.id = o.customer_id
      WHERE o.status IN ('registered','preparing') ORDER BY o.created_at`
   );
-  res.json(r.rows);
+  res.json(await withItems(r.rows));
 });
 
+// Delivery staff (and admin, view-only): orders ready for drop-off / collection
 app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, res) => {
+  const me = req.user.role === 'admin' ? null : req.user.id;
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status IN ('ready','on_the_way') ORDER BY o.created_at`
+     WHERE o.status = 'ready' OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
+     ORDER BY o.created_at`, [me]
   );
-  res.json(r.rows);
+  res.json(await withItems(r.rows));
 });
-
 
 // Admin: every order (open + finished), with customer info — basis for reports
 app.get('/orders', requireAuth('admin'), async (req, res) => {
@@ -236,15 +268,31 @@ app.get('/orders', requireAuth('admin'), async (req, res) => {
      FROM orders o JOIN customers c ON c.id = o.customer_id
      ORDER BY o.created_at DESC`
   );
-  res.json(r.rows);
+  res.json(await withItems(r.rows));
 });
 
-app.patch('/orders/:id/status', requireAuth('prep', 'delivery', 'admin'), async (req, res) => {
+// Allowed status moves per role. Admin cannot move an order — view only.
+const STATUS_MOVES = {
+  prep: { registered: 'preparing', preparing: 'ready' },
+  delivery: { ready: 'on_the_way', on_the_way: 'delivered' }
+};
+
+app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res) => {
   const { status } = req.body;
-  const r = await pool.query(
-    'UPDATE orders SET status=$1 WHERE id=$2 RETURNING *',
-    [status, req.params.id]
-  );
+  const moves = STATUS_MOVES[req.user.role] || {};
+  const cur = await pool.query('SELECT status, delivery_staff_id FROM orders WHERE id=$1', [req.params.id]);
+  if (!cur.rows.length) return res.status(404).json({ error: 'not_found' });
+  const row = cur.rows[0];
+  if (moves[row.status] !== status || (status === 'delivered' && row.delivery_staff_id !== req.user.id)) {
+    return res.status(403).json({ error: 'not_allowed', message: 'لا يمكنك تنفيذ هذا التغيير على هذا الطلب.' });
+  }
+  const params = [status, req.params.id, row.status];
+  let extra = '';
+  if (status === 'ready') extra = ', prepared_at=now()';
+  if (status === 'on_the_way') { extra = ', delivery_staff_id=$4'; params.push(req.user.id); }
+  if (status === 'delivered') extra = ", delivered_at=now(), payment_status='paid'";
+  const r = await pool.query(`UPDATE orders SET status=$1${extra} WHERE id=$2 AND status=$3 RETURNING *`, params);
+  if (!r.rows.length) return res.status(409).json({ error: 'taken', message: 'الطلب اتغيّرت حالته، حدّث الشاشة.' });
   res.json(r.rows[0]);
 });
 

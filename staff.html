@@ -315,16 +315,37 @@ document.addEventListener("click",function(e){
 });
 var _draw=draw;draw=function(){_draw();var a=$("acct");if(TOK&&a&&!a.querySelector("#lo"))a.insertAdjacentHTML("beforeend",'<div style="padding:12px"><button class="chip" id="lo">🚪 تسجيل الخروج</button></div>')};
 
-var TM=[],RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
+var TM=[],RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"},editId=0,SO={prep:[],del:[]};
+function esc(x){return String(x==null?"":x).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function teamLoad(){apiCall("GET","/staff-list").then(function(r){TM=Array.isArray(r)?r:[];teamV()}).catch(function(){})}
-function teamV(){var el=$("team");if(!el)return;
-  el.innerHTML='<div class="card"><h2>👥 الموظفون</h2>'+TM.map(function(m){return '<p>'+m.name+' — '+RN[m.role]+' — '+m.phone+(m.active?'':' (موقوف)')+' <button class="chip" data-tg="'+m.id+'">'+(m.active?'إيقاف':'تفعيل')+'</button></p>'}).join('')+'</div><div class="card"><h2>إضافة موظف</h2><input id="tN" placeholder="الاسم" style="'+INP+'"><input id="tP" placeholder="رقم الموبايل" inputmode="tel" style="'+INP+'"><input id="tW" type="password" placeholder="كلمة السر (6 أحرف+)" style="'+INP+'"><select id="tR" style="'+INP+'"><option value="prep">تجهيز</option><option value="delivery">توصيل</option><option value="admin">إدارة</option></select><button class="big" id="tAdd">إضافة</button><p id="tErr" style="color:#c0392b"></p></div>'}
-var _go=go;go=function(t){if(t==="out"){logout();return}_go(t);if(t==="team")teamLoad()};
+function teamV(){var el=$("team");if(!el)return;var e=TM.find(function(m){return m.id===editId});
+  el.innerHTML='<div class="card"><h2>👥 الموظفون</h2>'+TM.map(function(m){return '<p><b>'+esc(m.name)+'</b> — '+esc(m.job_title||"")+' ('+RN[m.role]+') — '+esc(m.phone)+(m.active?'':' (موقوف)')+'<br><button class="chip" data-te="'+m.id+'">تعديل</button> <button class="chip" data-tg="'+m.id+'">'+(m.active?'إيقاف':'تفعيل')+'</button></p>'}).join('')+'</div><div class="card"><h2>'+(e?'تعديل موظف':'إضافة موظف')+'</h2><input id="tN" placeholder="الاسم" value="'+esc(e&&e.name)+'" style="'+INP+'"><input id="tT" placeholder="المسمى الوظيفي" value="'+esc(e&&e.job_title)+'" style="'+INP+'"><input id="tP" placeholder="رقم الموبايل" inputmode="tel" value="'+esc(e&&e.phone)+'"'+(e?' disabled':'')+' style="'+INP+'"><input id="tW" type="password" placeholder="'+(e?'كلمة سر جديدة (اختياري)':'كلمة السر (6 أحرف+)')+'" style="'+INP+'"><select id="tR" style="'+INP+'"><option value="prep">تجهيز</option><option value="delivery">توصيل</option><option value="admin">إدارة</option></select><button class="big" id="tAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+(e?' <button class="chip" id="tCan">إلغاء</button>':'')+'<p id="tErr" style="color:#c0392b"></p></div>';
+  if(e)$("tR").value=e.role}
+function ordLoad(){var j=[];
+  if(ROLE==="prep"||ROLE==="admin")j.push(apiCall("GET","/orders/staff/prep").then(function(r){SO.prep=Array.isArray(r)?r:[]}));
+  if(ROLE==="delivery"||ROLE==="admin")j.push(apiCall("GET","/orders/staff/delivery").then(function(r){SO.del=Array.isArray(r)?r:[]}));
+  Promise.all(j).then(ordV).catch(function(){})}
+var STN={registered:"جديد",preparing:"جاري التجهيز",ready:"جاهز للتوصيل",on_the_way:"في الطريق"};
+function ocard(o,k){var act=null;
+  if(ROLE==="prep"&&k==="prep")act=o.status==="registered"?["preparing","▶ بدء التجهيز"]:["ready","✅ تم التجهيز"];
+  if(ROLE==="delivery"&&k==="del")act=o.status==="ready"?["on_the_way","🚚 استلمت الطلب للتوصيل"]:["delivered","💵 تم التسليم وتحصيل النقدية"];
+  return '<div class="card"><b>طلب #'+o.id+'</b> — '+STN[o.status]+'<br>'+esc(o.customer_name)+' · '+esc(o.customer_phone)+(o.address?'<br>📍 '+esc(o.address):'')+'<ul>'+(o.items||[]).map(function(i){return '<li>'+esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+' '+esc(i.unit)+'</li>'}).join('')+'</ul><b>الإجمالي: '+o.total+' ج.م</b>'+(act?'<button class="big" style="width:100%;margin-top:8px" data-ost="'+o.id+':'+act[0]+'">'+act[1]+'</button>':(ROLE==="admin"?'<p style="color:var(--mute);margin:6px 0 0">عرض فقط</p>':''))+'</div>'}
+function ordV(){
+  var s=$("store"),d=$("driver");
+  if(s&&(ROLE==="prep"||ROLE==="admin"))s.innerHTML='<h1 style="font-size:19px">🧑‍🍳 التجهيز ('+SO.prep.length+')</h1>'+(SO.prep.map(function(o){return ocard(o,"prep")}).join("")||'<p>لا توجد طلبات للتجهيز.</p>');
+  if(d&&(ROLE==="delivery"||ROLE==="admin"))d.innerHTML='<h1 style="font-size:19px">🚚 التوصيل ('+SO.del.length+')</h1>'+(SO.del.map(function(o){return ocard(o,"del")}).join("")||'<p>لا توجد طلبات للتوصيل.</p>')}
+var _go=go;go=function(t){if(t==="out"){logout();return}_go(t);if(t==="team")teamLoad();if(t==="store"||t==="driver")ordLoad()};
+var _d2=draw;draw=function(){_d2();if(TOK&&(SO.prep.length||SO.del.length))ordV()};
+setInterval(function(){if(TOK&&ROLE&&ROLE!=="customer")ordLoad()},15000);
 document.addEventListener("click",function(e){var t=e.target.closest("button");if(!t)return;
-  if(t.dataset.tg){apiCall("PATCH","/staff/"+t.dataset.tg+"/active").then(teamLoad)}
-  else if(t.id==="tAdd"){var b={name:$("tN").value.trim(),phone:$("tP").value.trim(),password:$("tW").value,role:$("tR").value};
-    if(!b.name||!b.phone||b.password.length<6){$("tErr").textContent="أكمل البيانات (كلمة السر 6 أحرف على الأقل)";return}
-    apiCall("POST","/auth/staff-create",b).then(function(r){if(r.id){toast("تمت إضافة الموظف");teamLoad()}else $("tErr").textContent=r.message||"رقم الموبايل مستخدم بالفعل"}).catch(function(){$("tErr").textContent="تعذّر الاتصال"})}
+  if(t.dataset.ost){var q=t.dataset.ost.split(":");t.disabled=true;apiCall("PATCH","/orders/"+q[0]+"/status",{status:q[1]}).then(function(r){if(r.error)toast(r.message||"تعذّر التنفيذ");ordLoad()}).catch(function(){t.disabled=false})}
+  else if(t.dataset.tg){apiCall("PATCH","/staff/"+t.dataset.tg+"/active").then(teamLoad)}
+  else if(t.dataset.te){editId=Number(t.dataset.te);teamV()}
+  else if(t.id==="tCan"){editId=0;teamV()}
+  else if(t.id==="tAdd"){var b={name:$("tN").value.trim(),job_title:$("tT").value.trim(),phone:$("tP").value.trim(),password:$("tW").value,role:$("tR").value};
+    if(!b.name||!b.phone||(!editId&&b.password.length<6)){$("tErr").textContent="أكمل البيانات (كلمة السر 6 أحرف على الأقل)";return}
+    var rq=editId?apiCall("PATCH","/staff/"+editId,b):apiCall("POST","/auth/staff-create",b);
+    rq.then(function(r){if(r.id||r.ok){toast("تم الحفظ");editId=0;teamLoad()}else $("tErr").textContent=r.message||"تعذّر الحفظ"}).catch(function(){$("tErr").textContent="تعذّر الاتصال"})}
 });
 startApp();
 </script>
