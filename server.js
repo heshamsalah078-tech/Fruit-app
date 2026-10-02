@@ -10,6 +10,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
+app.get('/staff', (req, res) => res.sendFile(require('path').join(__dirname, 'staff.html')));
+process.on('unhandledRejection', (e) => console.error('unhandled', e));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL, // your Neon connection string
@@ -150,6 +152,17 @@ app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
   );
   if (!r.rows.length) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
+});
+
+// Admin: staff list + activate/deactivate
+app.get('/staff-list', requireAuth('admin'), async (req, res) => {
+  const r = await pool.query('SELECT id, name, phone, role, active FROM staff ORDER BY id');
+  res.json(r.rows);
+});
+app.patch('/staff/:id/active', requireAuth('admin'), async (req, res) => {
+  if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'self' });
+  const r = await pool.query('UPDATE staff SET active = NOT active WHERE id=$1 RETURNING id, active', [req.params.id]);
+  res.json(r.rows[0] || {});
 });
 
 // Admin: list every customer (for the admin dashboard)
