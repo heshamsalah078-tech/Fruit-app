@@ -103,10 +103,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
   <button data-t="shop" class="on"><span>🏪</span>المتجر</button>
   <button data-t="cart"><span>🧺</span>السلة<em id="cc" hidden>0</em></button>
   <button data-t="orders"><span>🚚</span>طلباتي</button>
-  <button data-t="store"><span>🧑‍🍳</span>التجهيز</button>
-  <button data-t="driver"><span>🛵</span>التوصيل</button>
   <button data-t="ref"><span>🎁</span>المكافآت</button>
-  <button data-t="admin"><span>🛠️</span>الإدارة</button>
 </nav>
 
 <script>
@@ -284,21 +281,21 @@ document.addEventListener("click",function(e){
 
 /* ===== AUTH ===== */
 var amode="login";
-var AROLES={customer:["acct","shop","cart","orders","ref"],prep:["store"],delivery:["driver"],admin:["acct","shop","cart","orders","store","driver","ref","admin"]};
+var AROLES={customer:["acct","shop","cart","orders","ref"]};
 function authBox(){var el=$("auth");if(!el){el=document.createElement("div");el.id="auth";el.style.cssText="position:fixed;inset:0;z-index:99;background:var(--bg,#f6f8f4);overflow:auto;padding:24px 18px;direction:rtl";document.body.appendChild(el)}return el}
 function authV(){
   var el=authBox();if(TOK){el.style.display="none";return}el.style.display="block";
   var tb=function(m,t){return '<button class="chip'+(amode===m?' on':'')+'" data-am="'+m+'" style="flex:1">'+t+'</button>'};
   var f='<input id="aPhone" placeholder="رقم الموبايل" inputmode="tel" style="'+INP+'">'+'<input id="aPass" type="password" placeholder="كلمة السر" style="'+INP+'">';
   if(amode==="signup")f='<input id="aName" placeholder="الاسم" style="'+INP+'">'+f+'<input id="aAddr" placeholder="عنوان التوصيل" style="'+INP+'">';
-  el.innerHTML='<h1 style="text-align:center;margin:10px 0">🥬 سوق الطازج</h1><div style="display:flex;gap:6px;margin:14px 0">'+tb("login","دخول")+tb("signup","حساب جديد")+tb("staff","دخول موظف")+'</div><div class="card">'+f+'<button class="big" id="aGo" style="width:100%;margin-top:10px">'+(amode==="signup"?"تسجيل":"دخول")+'</button><p id="aErr" style="color:#c0392b;margin:8px 0 0"></p></div>';
+  el.innerHTML='<h1 style="text-align:center;margin:10px 0">🥬 سوق الطازج</h1><div style="display:flex;gap:6px;margin:14px 0">'+tb("login","دخول")+tb("signup","حساب جديد")+'</div><div class="card">'+f+'<button class="big" id="aGo" style="width:100%;margin-top:10px">'+(amode==="signup"?"تسجيل":"دخول")+'</button><p id="aErr" style="color:#c0392b;margin:8px 0 0"></p></div>';
 }
 function applyRole(){
   var ok=AROLES[ROLE]||[];
   document.querySelectorAll("nav button").forEach(function(b){b.style.display=ok.indexOf(b.dataset.t)>-1?"":"none"});
   document.querySelectorAll("section").forEach(function(sx){if(ok.indexOf(sx.id)<0)sx.classList.remove("on")});
 }
-function startApp(){authV();if(!TOK)return;applyRole();hello();draw();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
+function startApp(){if(TOK&&ROLE!=="customer"){logout();return}authV();if(!TOK)return;applyRole();hello();draw();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
 function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}authV()}
 function authDone(r,role){TOK=r.token;ROLE=role;var u=r.customer||r.staff;me={id:u.id,name:u.name,phone:u.phone||"",addr:u.address||""};try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}startApp()}
 document.addEventListener("click",function(e){
