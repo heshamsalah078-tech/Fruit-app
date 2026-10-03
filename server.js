@@ -51,10 +51,10 @@ app.get('/products', async (req, res) => {
 });
 
 app.post('/products', requireAuth('admin'), async (req, res) => {
-  const { name, emoji, image_url, price, unit, category } = req.body;
+  const { name, emoji, image_url, price, unit, category, stock_qty } = req.body;
   const r = await pool.query(
-    'INSERT INTO products (name, emoji, image_url, price, unit, category) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [name, emoji, image_url, price, unit, category]
+    'INSERT INTO products (name, emoji, image_url, price, unit, category, stock_qty) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+    [name, emoji, image_url, price, unit, category, stock_qty || 0]
   );
   res.json(r.rows[0]);
 });
@@ -75,7 +75,6 @@ app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
 
 // ---- CUSTOMER ACCOUNTS (signup / login) ----
 
-// Sign up: create a brand-new customer account with a password
 app.post('/auth/signup', async (req, res) => {
   const { name, phone, address, password } = req.body;
   if (!name || !phone || !address || !password) {
@@ -96,7 +95,6 @@ app.post('/auth/signup', async (req, res) => {
   res.json({ token, customer });
 });
 
-// Login: existing customer with phone + password
 app.post('/auth/login', async (req, res) => {
   const { phone, password } = req.body;
   const r = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
@@ -115,7 +113,6 @@ app.post('/auth/login', async (req, res) => {
   });
 });
 
-// Staff login (prep / delivery / admin) — accounts are created by the admin, not self-signup
 app.post('/auth/staff-login', async (req, res) => {
   const { phone, password } = req.body;
   const r = await pool.query('SELECT * FROM staff WHERE phone=$1 AND active=true', [phone]);
@@ -131,7 +128,6 @@ app.post('/auth/staff-login', async (req, res) => {
   res.json({ token, staff: { id: staffMember.id, name: staffMember.name, role: staffMember.role } });
 });
 
-// Admin creates a staff account (prep, delivery, or another admin)
 app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
   const { name, phone, password, role, job_title } = req.body;
   if (!['prep', 'delivery', 'admin'].includes(role) || !name || !phone || !password || password.length < 6) {
@@ -147,7 +143,6 @@ app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0]);
 });
 
-// Admin edits a staff member (name, job title, role, optional new password)
 app.patch('/staff/:id', requireAuth('admin'), async (req, res) => {
   const { name, job_title, role, password } = req.body;
   if (!['prep', 'delivery', 'admin'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
@@ -169,7 +164,6 @@ app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0]);
 });
 
-// Admin: staff list + activate/deactivate
 app.get('/staff-list', requireAuth('admin'), async (req, res) => {
   const r = await pool.query('SELECT id, name, phone, role, job_title, active FROM staff ORDER BY id');
   res.json(r.rows);
@@ -180,7 +174,6 @@ app.patch('/staff/:id/active', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0] || {});
 });
 
-// Admin: list every customer (for the admin dashboard)
 app.get('/customers', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
     'SELECT id, name, phone, address, reward_balance, referred_friends, created_at FROM customers ORDER BY created_at DESC'
@@ -188,15 +181,85 @@ app.get('/customers', requireAuth('admin'), async (req, res) => {
   res.json(r.rows);
 });
 
+// ---- STOCK (inventory) ----
+// Internal helper: record a stock movement and update the product's stock_qty in one transaction.
+// type: 'purchase' | 'sale' | 'return' | 'waste'. quantity is always positive.
+async function moveStock(client, { product_id, type, quantity, note, order_id, staff_id }) {
+  const sign = (type === 'purchase' || type === 'return') ? 1 : -1;
+  await client.query(
+    'UPDATE products SET stock_qty = stock_qty + $1 WHERE id = $2',
+    [sign * quantity, product_id]
+  );
+  await client.query(
+    `INSERT INTO stock_movements (product_id, type, quantity, note, order_id, staff_id)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [product_id, type, quantity, note || null, order_id || null, staff_id || null]
+  );
+}
+
+// Admin: full stock dashboard — current quantities + movement history
+app.get('/stock', requireAuth('admin'), async (req, res) => {
+  const products = await pool.query('SELECT id, name, emoji, unit, stock_qty FROM products ORDER BY id');
+  const moves = await pool.query(
+    `SELECT m.*, p.name AS product_name, p.emoji, p.unit, s.name AS staff_name
+     FROM stock_movements m
+     JOIN products p ON p.id = m.product_id
+     LEFT JOIN staff s ON s.id = m.staff_id
+     ORDER BY m.created_at DESC LIMIT 200`
+  );
+  res.json({ products: products.rows, movements: moves.rows });
+});
+
+// Admin: record a purchase (restock) or waste entry
+app.post('/stock/movement', requireAuth('admin'), async (req, res) => {
+  const { product_id, type, quantity, note } = req.body;
+  if (!['purchase', 'waste'].includes(type) || !product_id || !quantity || quantity <= 0) {
+    return res.status(400).json({ error: 'invalid', message: 'بيانات غير صحيحة.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (type === 'waste') {
+      const cur = await client.query('SELECT stock_qty FROM products WHERE id=$1 FOR UPDATE', [product_id]);
+      if (!cur.rows.length || Number(cur.rows[0].stock_qty) < Number(quantity)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'insufficient_stock', message: 'الكمية المسجلة كتالفة أكبر من المخزون المتاح.' });
+      }
+    }
+    await moveStock(client, { product_id, type, quantity, note, staff_id: req.user.id });
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ---- ORDERS ----
+// Customer places an order: checks stock, creates order, decrements stock ('sale'), all atomically.
 app.post('/orders', requireAuth('customer'), async (req, res) => {
   const { customer_id, items, delivery_fee, reward_discount, total } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Lock and check stock for every item first
+    for (const it of items) {
+      const cur = await client.query('SELECT stock_qty, name FROM products WHERE id=$1 FOR UPDATE', [it.product_id]);
+      if (!cur.rows.length || Number(cur.rows[0].stock_qty) < Number(it.quantity)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'insufficient_stock',
+          message: 'عذرًا، الكمية المتاحة من "' + (cur.rows[0] ? cur.rows[0].name : 'المنتج') + '" لا تكفي.'
+        });
+      }
+    }
+
     const orderR = await client.query(
       `INSERT INTO orders (customer_id, status, delivery_fee, reward_discount, total, payment_status)
-       VALUES ($1,'registered',$2,$3,$4,'due') RETURNING *`,
+       VALUES ($1,'awaiting_prep',$2,$3,$4,'due') RETURNING *`,
       [customer_id, delivery_fee, reward_discount, total]
     );
     const order = orderR.rows[0];
@@ -206,6 +269,7 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
          VALUES ($1,$2,$3,$4,$5)`,
         [order.id, it.product_id, it.quantity, it.unit_price, it.quantity * it.unit_price]
       );
+      await moveStock(client, { product_id: it.product_id, type: 'sale', quantity: it.quantity, order_id: order.id });
     }
     await client.query('COMMIT');
     res.json(order);
@@ -225,7 +289,6 @@ app.get('/orders/customer/:id', requireAuth('customer', 'admin'), async (req, re
   res.json(r.rows);
 });
 
-// Helper: attach line items to a list of orders
 async function withItems(orders) {
   if (!orders.length) return orders;
   const ids = orders.map(o => o.id);
@@ -239,42 +302,46 @@ async function withItems(orders) {
   return orders.map(o => ({ ...o, items: byOrder[o.id] || [] }));
 }
 
-// Prep staff (and admin, view-only): orders waiting to be prepared
+// Prep staff (and admin, view-only): awaiting_prep + preparing orders
 app.get('/orders/staff/prep', requireAuth('prep', 'admin'), async (req, res) => {
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status IN ('registered','preparing') ORDER BY o.created_at`
+     WHERE o.status IN ('awaiting_prep','preparing') ORDER BY o.created_at`
   );
   res.json(await withItems(r.rows));
 });
 
-// Delivery staff (and admin, view-only): orders ready for drop-off / collection
+// Delivery staff (and admin, view-only): awaiting_delivery + on_the_way orders
 app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, res) => {
   const me = req.user.role === 'admin' ? null : req.user.id;
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status = 'ready' OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
+     WHERE o.status = 'awaiting_delivery' OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
      ORDER BY o.created_at`, [me]
   );
   res.json(await withItems(r.rows));
 });
 
-// Admin: every order (open + finished), with customer info — basis for reports
 app.get('/orders', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
-    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
-     FROM orders o JOIN customers c ON c.id = o.customer_id
+    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
+            ps.name AS prep_staff_name, ds.name AS delivery_staff_name
+     FROM orders o
+     JOIN customers c ON c.id = o.customer_id
+     LEFT JOIN staff ps ON ps.id = o.prep_staff_id
+     LEFT JOIN staff ds ON ds.id = o.delivery_staff_id
      ORDER BY o.created_at DESC`
   );
   res.json(await withItems(r.rows));
 });
 
-// Allowed status moves per role. Admin cannot move an order — view only.
+// Six-stage order flow, each move stamped with its own timestamp:
+// awaiting_prep -> preparing -> awaiting_delivery -> on_the_way -> delivered
 const STATUS_MOVES = {
-  prep: { registered: 'preparing', preparing: 'ready' },
-  delivery: { ready: 'on_the_way', on_the_way: 'delivered' }
+  prep: { awaiting_prep: 'preparing', preparing: 'awaiting_delivery' },
+  delivery: { awaiting_delivery: 'on_the_way', on_the_way: 'delivered' }
 };
 
 app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res) => {
@@ -288,24 +355,48 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
   }
   const params = [status, req.params.id, row.status];
   let extra = '';
-  if (status === 'ready') extra = ', prepared_at=now()';
-  if (status === 'on_the_way') { extra = ', delivery_staff_id=$4'; params.push(req.user.id); }
+  if (status === 'preparing') { extra = ', prep_started_at=now(), prep_staff_id=$4'; params.push(req.user.id); }
+  if (status === 'awaiting_delivery') extra = ', prepared_at=now()';
+  if (status === 'on_the_way') { extra = ', delivery_started_at=now(), delivery_staff_id=$4'; params.push(req.user.id); }
   if (status === 'delivered') extra = ", delivered_at=now(), payment_status='paid'";
   const r = await pool.query(`UPDATE orders SET status=$1${extra} WHERE id=$2 AND status=$3 RETURNING *`, params);
   if (!r.rows.length) return res.status(409).json({ error: 'taken', message: 'الطلب اتغيّرت حالته، حدّث الشاشة.' });
   res.json(r.rows[0]);
 });
 
+// Cancel an order: only the owning customer or an admin, and stock is returned ('return')
 app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, res) => {
-  const r = await pool.query(
-    "UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *",
-    [req.params.id]
-  );
-  res.json(r.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ord = await client.query('SELECT * FROM orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!ord.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not_found' }); }
+    const order = ord.rows[0];
+    if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden', message: 'لا يمكنك إلغاء طلب لا يخصك.' });
+    }
+    if (order.status === 'delivered' || order.status === 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'not_allowed', message: 'لا يمكن إلغاء هذا الطلب.' });
+    }
+    const items = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id=$1', [order.id]);
+    for (const it of items.rows) {
+      await moveStock(client, { product_id: it.product_id, type: 'return', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب' });
+    }
+    const r = await client.query("UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *", [order.id]);
+    await client.query('COMMIT');
+    res.json(r.rows[0]);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // ---- PAYMENTS ----
-app.post('/payments/confirm', async (req, res) => {
+app.post('/payments/confirm', requireAuth('customer'), async (req, res) => {
   const { order_id, reference, amount } = req.body;
   const dup = await pool.query('SELECT * FROM transactions WHERE reference=$1', [reference]);
   if (dup.rows.length) {
@@ -332,7 +423,7 @@ app.post('/payments/confirm', async (req, res) => {
   }
 });
 
-app.patch('/payments/:orderId/verify', async (req, res) => {
+app.patch('/payments/:orderId/verify', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
     "UPDATE orders SET payment_status='confirmed' WHERE id=$1 RETURNING *",
     [req.params.orderId]
