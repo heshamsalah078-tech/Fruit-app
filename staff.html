@@ -185,10 +185,13 @@ function stockV(){
 /* ---------- orders (prep + delivery) ---------- */
 var SO={prep:[],del:[]};
 var STN={awaiting_prep:"بانتظار التجهيز",preparing:"جاري التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق",delivered:"تم التسليم"};
+var LOADERR="";
+function setO(k,r){if(Array.isArray(r)){SO[k]=r;LOADERR=""}else{LOADERR=(r&&(r.message||r.error))||"تعذّر تحميل الطلبات من السيرفر"}}
+function errBanner(){return LOADERR?'<p style="background:#5a1f1f;color:#fff;padding:10px;border-radius:10px;margin:8px 0">⚠️ '+esc(LOADERR)+' — الأرقام المعروضة قد تكون قديمة.</p>':''}
 function ordLoad(){
   var jobs=[];
-  if(ROLE==="prep"||ROLE==="admin")jobs.push(apiCall("GET","/orders/staff/prep").then(function(r){SO.prep=Array.isArray(r)?r:[]}));
-  if(ROLE==="delivery"||ROLE==="admin")jobs.push(apiCall("GET","/orders/staff/delivery").then(function(r){SO.del=Array.isArray(r)?r:[]}));
+  if(ROLE==="prep"||ROLE==="admin")jobs.push(apiCall("GET","/orders/staff/prep").then(function(r){setO("prep",r)}));
+  if(ROLE==="delivery"||ROLE==="admin")jobs.push(apiCall("GET","/orders/staff/delivery").then(function(r){setO("del",r)}));
   Promise.all(jobs).then(ordV).catch(function(){});
 }
 function timesBlock(o){
@@ -212,13 +215,13 @@ function ocard(o,k){
 function ordV(){
   if(ROLE==="prep"||ROLE==="admin"){
     var wp=SO.prep.filter(function(o){return o.status==="awaiting_prep"}),pp=SO.prep.filter(function(o){return o.status==="preparing"});
-    $("store").innerHTML='<h1 style="font-size:19px">🧑‍🍳 التجهيز</h1>'+
+    $("store").innerHTML='<h1 style="font-size:19px">🧑‍🍳 التجهيز</h1>'+errBanner()+
       '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التجهيز ('+wp.length+')</h2>'+(wp.length?wp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التجهيز.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">🔧 جاري التجهيز ('+pp.length+')</h2>'+(pp.length?pp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات قيد التجهيز حاليًا.</p>');
   }
   if(ROLE==="delivery"||ROLE==="admin"){
     var wd=SO.del.filter(function(o){return o.status==="awaiting_delivery"}),od=SO.del.filter(function(o){return o.status==="on_the_way"});
-    $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1>'+
+    $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1>'+errBanner()+
       '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التوصيل ('+wd.length+')</h2>'+(wd.length?wd.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التوصيل.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">🛵 في الطريق ('+od.length+')</h2>'+(od.length?od.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات في الطريق حاليًا.</p>');
   }
