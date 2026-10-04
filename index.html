@@ -276,23 +276,35 @@ document.addEventListener("click",function(e){
     else if(d.k==="go"){o.st=2;toast("تم إبلاغ العميل أنك في الطريق")}
     else if(d.k==="done"){o.st=3;toast("تم تسجيل التسليم")}
     draw()}
-  else if(d.x){var c=orders[d.x],late=c.st===2;c.kept=late;c.back=late?Math.max(0,c.total-FEE):c.total;c.st=-1;toast("تم إلغاء الطلب");draw()}
-  else if(d.q){orders[d.q].rq=true;toast("تم تسجيل طلبك");draw()}
+  else if(d.x){var oid=Number(d.x);var c=orders.find(function(o){return o.id===oid});if(!c)return;
+    apiCall("PATCH","/orders/"+oid+"/cancel",{}).then(function(r){
+      if(r&&r.status==="cancelled"){c.status="cancelled";toast("تم إلغاء الطلب")}
+      else{toast((r&&r.message)||"تعذّر إلغاء الطلب")}
+      draw()
+    }).catch(function(){toast("تعذّر الاتصال بالخادم");draw()})}
+  else if(d.q){var oid2=Number(d.q);var c2=orders.find(function(o){return o.id===oid2});if(c2){c2.rq=true;toast("تم تسجيل طلبك");draw()}}
   else if(d.r){var rv=($("payref")&&$("payref").value.trim())||"";
     if(!rv){toast("أدخل رقم العملية أولًا");return}
     if(usedRefs.indexOf(rv)!==-1){payErr="عذرًا، هذه العملية تمت بالفعل من قبل.";draw();return}
-    payErr="";
-    usedRefs.push(rv);
-    var q=orders[d.r];q.st=3;q.pay="pending";q.ref=rv;toast("شكرًا! تم تأكيد الاستلام");draw()}
+    var oid3=Number(d.r);var q=orders.find(function(o){return o.id===oid3});if(!q)return;
+    apiCall("POST","/payments/confirm",{order_id:oid3,reference:rv,amount:q.total}).then(function(r){
+      if(r&&r.ok){payErr="";usedRefs.push(rv);q.pay="pending";q.ref=rv;toast("شكرًا! تم تأكيد الاستلام")}
+      else{payErr=(r&&r.message)||"تعذّر تأكيد الدفع"}
+      draw()
+    }).catch(function(){payErr="تعذّر الاتصال بالخادم";draw()})}
   else if(t.id==="order"){
     if(!me.phone){toast("سجّل بياناتك أولًا");go("acct");return}
     var nm=me.name,ph=me.phone,ad=me.addr;
     dbSaveCustomer(me);
     var s=sub(),dd=Math.min(bal(),s);used+=dd;
     var lines=P.filter(function(p){return cart[p.id]}).map(function(p){return {id:p.id,n:p.n,e:p.e,q:cart[p.id],u:p.u,line:cart[p.id]*p.p}});
-    var ord={id:1001+orders.length,items:count(),lines:lines,total:s+FEE-dd,fee:FEE,st:0,pay:"due",cust:nm,phone:ph,addr:ad};
-    orders.unshift(ord);dbSaveOrder(ord);
-    cart={};toast("تم تأكيد طلبك");go("orders")}
+    var ord={items:count(),lines:lines,total:s+FEE-dd,fee:FEE,pay:"due",cust:nm,phone:ph,addr:ad};
+    dbSaveOrder(ord,function(){
+      orders.unshift(ord);
+      cart={};toast("تم تأكيد طلبك");go("orders")
+    },function(msg){
+      toast(msg)
+    });}
   else if(t.id==="pNew"){editingP=0;draw()}
   else if(d.pe){editingP=Number(d.pe);draw()}
   else if(d.pd){if(confirm("هل تريد حذف هذا المنتج؟")){var pid=Number(d.pd);P=P.filter(function(p){return p.id!==pid});delete cart[pid];toast("تم حذف المنتج");draw();apiCall("DELETE","/products/"+pid).catch(function(){})}}
@@ -335,7 +347,7 @@ function applyRole(){
   document.querySelectorAll("nav button").forEach(function(b){b.style.display=ok.indexOf(b.dataset.t)>-1?"":"none"});
   document.querySelectorAll("section").forEach(function(sx){if(ok.indexOf(sx.id)<0)sx.classList.remove("on")});
 }
-function startApp(){if(TOK&&ROLE!=="customer"){logout();return}authV();if(!TOK)return;applyRole();hello();draw();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
+function startApp(){if(TOK&&ROLE!=="customer"){logout();return}authV();if(!TOK)return;applyRole();hello();draw();refreshMyOrders();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
 function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}authV()}
 function authDone(r,role){TOK=r.token;ROLE=role;var u=r.customer||r.staff;me={id:u.id,name:u.name,phone:u.phone||"",addr:u.address||""};try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}startApp()}
 document.addEventListener("click",function(e){
