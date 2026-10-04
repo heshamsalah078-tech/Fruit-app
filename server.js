@@ -13,10 +13,16 @@ app.use(express.json());
   app.get('/'+f, function(req,res){res.sendFile(require('path').join(__dirname,f))});
 });
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
-app.get('/customer', (req, res) => res.redirect('/customer/'));
-app.get('/customer/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
-app.get('/staff', (req, res) => res.redirect('/staff/'));
-app.get('/staff/', (req, res) => res.sendFile(require('path').join(__dirname, 'staff.html')));
+// Express treats /x and /x/ as the same route, so check the real URL to avoid a redirect loop
+function pageRoute(base, file) {
+  return (req, res) => {
+    const p = req.originalUrl.split('?')[0];
+    if (!p.endsWith('/')) return res.redirect(base + '/' + req.originalUrl.slice(p.length));
+    res.sendFile(require('path').join(__dirname, file));
+  };
+}
+app.get('/customer', pageRoute('/customer', 'index.html'));
+app.get('/staff', pageRoute('/staff', 'staff.html'));
 process.on('unhandledRejection', (e) => console.error('unhandled', e));
 
 const pool = new Pool({
