@@ -9,6 +9,9 @@ const jwt = require('jsonwebtoken');
 const app = express();
 app.use(cors());
 app.use(express.json());
+['manifest.json','staff-manifest.json','sw.js','icon-192.png','icon-512.png'].forEach(function(f){
+  app.get('/'+f, function(req,res){res.sendFile(require('path').join(__dirname,f))});
+});
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 app.get('/staff', (req, res) => res.sendFile(require('path').join(__dirname, 'staff.html')));
 process.on('unhandledRejection', (e) => console.error('unhandled', e));

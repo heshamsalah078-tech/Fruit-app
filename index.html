@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>سوق الطازج</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#1F5B34">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#F4F8EF;--card:#fff;--ink:#1B2A1F;--mute:#66736a;--g:#1F5B34;--g2:#E1EFD8;--t:#E0482F;--line:#dfe8d8;
@@ -149,10 +153,36 @@ var API=location.hostname.indexOf("railway.app")>-1?"":"https://fruit-app-produc
 var TOK="",ROLE="";try{TOK=localStorage.getItem("sf_tok")||"";ROLE=localStorage.getItem("sf_role")||""}catch(x){}
 function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){logout();}return r.json()})}
 function dbSaveCustomer(c){}
-function dbSaveOrder(o){if(!me.id)return;apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).catch(function(){})}
+function dbSaveOrder(o,onOk,onFail){
+  if(!me.id){if(onFail)onFail("سجّل بياناتك أولًا");return}
+  apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
+    if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;if(onOk)onOk(r)}
+    else{if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
+  }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
+}
+function refreshMyOrders(){
+  if(!me.id)return;
+  apiCall("GET","/orders/customer/"+me.id).then(function(r){
+    if(!Array.isArray(r))return;
+    orders=r.map(function(x){
+      var local=orders.find(function(o){return o.id===x.id})||{};
+      return Object.assign({},local,{
+        id:x.id,status:x.status,total:Number(x.total),fee:Number(x.delivery_fee),
+        pay:x.payment_status,ref:x.payment_ref,created_at:x.created_at,
+        prep_started_at:x.prep_started_at,prepared_at:x.prepared_at,
+        delivery_started_at:x.delivery_started_at,delivered_at:x.delivered_at,
+        items:local.items,lines:local.lines,cust:me.name,phone:me.phone,addr:me.addr
+      });
+    });
+    draw();
+  }).catch(function(){});
+}
+setInterval(function(){if(TOK&&ROLE==="customer")refreshMyOrders()},12000);
 fetch(API+"/products").then(function(r){return r.json()}).then(function(a){if(a&&a.length){P=a.map(function(x){return {id:x.id,n:x.name,e:x.emoji,img:x.image_url||"",p:Number(x.price),u:x.unit,c:x.category}});nextPid=pMax()+1;draw()}}).catch(function(){});
 var CATS=["الكل","خضار","فواكه","ورقيات"],cat="الكل",cart={},orders=[],friends=2,used=0;
-var STEPS=["تم تسجيل الطلب","جارٍ التجهيز","في الطريق إليك","تم التسليم"];
+var STATUS_SEQ=["awaiting_prep","preparing","awaiting_delivery","on_the_way","delivered"];
+var STATUS_LABELS={awaiting_prep:"بانتظار التجهيز",preparing:"جارٍ التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق إليك",delivered:"تم التسليم",cancelled:"تم الإلغاء"};
+function stDt(s){if(!s)return null;return new Date(s).toLocaleString("ar-EG",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
 function $(i){return document.getElementById(i)}
 function num(n){return n.toLocaleString("ar-EG")}
 function money(n){return num(n)+" "+CUR}
@@ -177,18 +207,28 @@ function cartV(){
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
   '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>رصيد المكافآت</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':'<div class="card" style="margin-top:8px"><p class="mute">سجّل بياناتك أولًا لإتمام الطلب.</p><button class="chip" data-t="acct">تسجيل بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
 }
-function active(){return orders.some(function(o){return o.st>=0&&o.st<3})}
+function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
+function timesFor(o){
+  var lines=[];
+  if(o.created_at)lines.push("سُجّل: <b>"+stDt(o.created_at)+"</b>");
+  if(o.prep_started_at)lines.push("بدأ التجهيز: <b>"+stDt(o.prep_started_at)+"</b>");
+  if(o.prepared_at)lines.push("انتهى التجهيز: <b>"+stDt(o.prepared_at)+"</b>");
+  if(o.delivery_started_at)lines.push("بدأ التوصيل: <b>"+stDt(o.delivery_started_at)+"</b>");
+  if(o.delivered_at)lines.push("تم التسليم: <b>"+stDt(o.delivered_at)+"</b>");
+  return lines.length?'<div class="mute" style="font-size:12px;line-height:1.9;margin-top:8px">'+lines.join("<br>")+'</div>':'';
+}
 function ordV(){
   if(!orders.length){$("orders").innerHTML='<div class="empty"><div style="font-size:56px">🚚</div>لا توجد طلبات بعد.</div>';return}
   $("orders").innerHTML=orders.map(function(o,i){
-    var h='<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+num(o.items)+' منتجات · '+money(o.total)+'</div>';
-    if(o.st===-1)return h+'<p><b>تم إلغاء الطلب</b><br>المبلغ المسترد: '+money(o.back)+(o.kept?'<br><span class="mute">رسوم التوصيل ('+money(FEE)+') غير مستردة.</span>':'')+'</p></div>';
+    var h='<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+(o.items?num(o.items)+' منتجات · ':'')+money(o.total)+'</div>';
+    if(o.status==="cancelled")return h+'<p><b>تم إلغاء الطلب</b></p>'+timesFor(o)+'</div>';
     if(o.pay)h+='<p class="mute">حالة الدفع: '+(o.pay==="due"?"الدفع عند الاستلام عبر فودافون كاش":o.pay==="pending"?"بانتظار تأكيد التحويل رقم "+o.ref:"تم تأكيد الدفع")+'</p>';
-    h+='<ul class="steps">'+STEPS.map(function(s,k){return '<li class="'+(k<=o.st?'done':'')+'"><i>'+(k<=o.st?'✓':'')+'</i>'+s+'</li>'}).join("")+'</ul>';
-    if(o.st===2)h+='<div class="tot"><b>ادفع عند الاستلام</b>'+(payErr?'<p style="color:var(--t);font-weight:700;margin:8px 0">'+payErr+'</p>':'')+'<p class="mute">حوّل '+money(o.total)+' إلى فودافون كاش على الرقم 010XXXXXXXX ثم أدخل رقم العملية.</p><input id="payref" placeholder="رقم العملية" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit"><button class="big" style="background:var(--g)" data-r="'+i+'">تأكيد الاستلام والدفع</button></div>';
-    if(o.st<=1)h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+i+'">إلغاء الطلب مجانًا</button>';
-    if(o.st===2)h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+i+'">إلغاء الطلب (رسوم التوصيل لا تُسترد)</button>';
-    if(o.st===3)h+=o.rq?'<p class="mute">تم تسجيل طلب الإرجاع أو الاسترداد. سيتواصل معك فريق الدعم.</p>':'<button class="chip" style="margin-top:12px" data-q="'+i+'">طلب إرجاع أو استرداد</button>';
+    var curIdx=STATUS_SEQ.indexOf(o.status);
+    h+='<ul class="steps">'+STATUS_SEQ.map(function(s,k){return '<li class="'+(k<=curIdx?'done':'')+'"><i>'+(k<=curIdx?'✓':'')+'</i>'+STATUS_LABELS[s]+'</li>'}).join("")+'</ul>'+timesFor(o);
+    if(o.status==="on_the_way")h+='<div class="tot"><b>ادفع عند الاستلام</b>'+(payErr?'<p style="color:var(--t);font-weight:700;margin:8px 0">'+payErr+'</p>':'')+'<p class="mute">حوّل '+money(o.total)+' إلى فودافون كاش على الرقم 010XXXXXXXX ثم أدخل رقم العملية.</p><input id="payref" placeholder="رقم العملية" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit"><button class="big" style="background:var(--g)" data-r="'+o.id+'">تأكيد الاستلام والدفع</button></div>';
+    if(o.status==="awaiting_prep"||o.status==="preparing")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب مجانًا</button>';
+    else if(o.status==="awaiting_delivery"||o.status==="on_the_way")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب (رسوم التوصيل لا تُسترد)</button>';
+    if(o.status==="delivered")h+=o.rq?'<p class="mute">تم تسجيل طلب الإرجاع أو الاسترداد. سيتواصل معك فريق الدعم.</p>':'<button class="chip" style="margin-top:12px" data-q="'+o.id+'">طلب إرجاع أو استرداد</button>';
     return h+'</div>'}).join("");
 }
 function roleCard(o,i,txt,btn,k){
@@ -313,6 +353,7 @@ document.addEventListener("click",function(e){
 });
 var _draw=draw;draw=function(){_draw();var a=$("acct");if(TOK&&a&&!a.querySelector("#lo"))a.insertAdjacentHTML("beforeend",'<div style="padding:12px"><button class="chip" id="lo">🚪 تسجيل الخروج</button></div>')};
 startApp();
+if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 </script>
 </body>
 </html>

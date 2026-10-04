@@ -1,0 +1,27 @@
+{
+  "name": "لوحة الموظفين - سوق الطازج",
+  "short_name": "لوحة الموظفين",
+  "description": "لوحة تحكم موظفي سوق الطازج",
+  "start_url": "/staff",
+  "scope": "/staff",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F8EF",
+  "theme_color": "#1F5B34",
+  "dir": "rtl",
+  "lang": "ar",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>لوحة الموظفين</title>
+<link rel="manifest" href="/staff-manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#1F5B34">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#F4F8EF;--card:#fff;--ink:#1B2A1F;--mute:#66736a;--g:#1F5B34;--g2:#E1EFD8;--t:#E0482F;--line:#dfe8d8}
@@ -244,6 +248,7 @@ document.addEventListener("click",function(e){
         TOK=r.token;ROLE=r.staff.role;MYID=r.staff.id;MYNAME=r.staff.name;
         localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);localStorage.setItem("sf_id",MYID);localStorage.setItem("sf_name",MYNAME);
         startApp();
+if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
       }else{$("aErr").textContent=r.message||"بيانات الدخول غير صحيحة"}
     }).catch(function(){t.disabled=false;$("aErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
