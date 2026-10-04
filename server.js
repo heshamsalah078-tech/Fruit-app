@@ -13,7 +13,10 @@ app.use(express.json());
   app.get('/'+f, function(req,res){res.sendFile(require('path').join(__dirname,f))});
 });
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
-app.get('/staff', (req, res) => res.sendFile(require('path').join(__dirname, 'staff.html')));
+app.get('/customer', (req, res) => res.redirect('/customer/'));
+app.get('/customer/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
+app.get('/staff', (req, res) => res.redirect('/staff/'));
+app.get('/staff/', (req, res) => res.sendFile(require('path').join(__dirname, 'staff.html')));
 process.on('unhandledRejection', (e) => console.error('unhandled', e));
 
 const pool = new Pool({

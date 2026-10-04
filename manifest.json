@@ -2,8 +2,8 @@
   "name": "سوق الطازج",
   "short_name": "سوق الطازج",
   "description": "خضار وفواكه طازجة لباب بيتك",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "/customer/",
+  "scope": "/customer/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F4F8EF",
@@ -23,5 +23,6 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "id": "/customer/"
 }

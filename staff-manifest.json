@@ -2,8 +2,8 @@
   "name": "لوحة الموظفين - سوق الطازج",
   "short_name": "لوحة الموظفين",
   "description": "لوحة تحكم موظفي سوق الطازج",
-  "start_url": "/staff",
-  "scope": "/staff",
+  "start_url": "/staff/",
+  "scope": "/staff/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F4F8EF",
@@ -23,5 +23,6 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "id": "/staff/"
 }
