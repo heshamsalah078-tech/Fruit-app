@@ -70,9 +70,31 @@ nav button.on{color:var(--g);font-weight:700}
 nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;background:var(--t);color:#fff;border-radius:10px;min-width:18px;font-style:normal;font-size:11px;padding:1px 5px}
 #toast{position:fixed;bottom:92px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}
 #toast.show{opacity:1}
+
+#installBar{position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#1F5B34;color:#fff;display:none;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;font-size:14px;box-shadow:0 -2px 10px rgba(0,0,0,.25)}
+#installBar.show{display:flex}
+#installBar button{border:none;border-radius:18px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
+#installBtn{background:#fff;color:#1F5B34}
+#installClose{background:transparent;color:#fff;font-size:18px;padding:4px 8px}
+#iosHint{position:fixed;left:12px;right:12px;bottom:70px;z-index:9999;background:#fff;color:#111;border-radius:12px;padding:14px;font-size:13px;line-height:1.7;box-shadow:0 4px 20px rgba(0,0,0,.3);display:none}
+#iosHint.show{display:block}
+#iosHint b{color:#1F5B34}
+#iosHint .close{position:absolute;top:6px;left:10px;cursor:pointer;color:#888;font-size:16px}
 </style>
 </head>
 <body>
+
+<div id="installBar">
+  <span>📲 ثبّت التطبيق على شاشتك الرئيسية لسهولة الاستخدام</span>
+  <span style="display:flex;gap:6px">
+    <button id="installBtn">تثبيت</button>
+    <button id="installClose">✕</button>
+  </span>
+</div>
+<div id="iosHint">
+  <span class="close" id="iosHintClose">✕</span>
+  لتثبيت التطبيق على الآيفون: اضغط زر <b>المشاركة</b> ⬆️ في سفاري، ثم اختر <b>"إضافة إلى الشاشة الرئيسية"</b>.
+</div>
 <header><h1>🥬 سوق الطازج</h1><p id="hi">خضار وفواكه طازجة لباب بيتك</p></header>
 
 <section id="shop" class="on">
@@ -366,6 +388,53 @@ document.addEventListener("click",function(e){
 var _draw=draw;draw=function(){_draw();var a=$("acct");if(TOK&&a&&!a.querySelector("#lo"))a.insertAdjacentHTML("beforeend",'<div style="padding:12px"><button class="chip" id="lo">🚪 تسجيل الخروج</button></div>')};
 startApp();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
+
+(function(){
+  var deferredPrompt=null;
+  var bar=document.getElementById('installBar');
+  var btn=document.getElementById('installBtn');
+  var closeBtn=document.getElementById('installClose');
+  var iosHint=document.getElementById('iosHint');
+  var iosHintClose=document.getElementById('iosHintClose');
+  var DISMISS_KEY='install_dismissed_customer';
+
+  function isStandalone(){
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+  }
+  function isIos(){
+    return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+  }
+  if(isStandalone()){ /* already installed, do nothing */ }
+  else if(localStorage.getItem(DISMISS_KEY)==='1'){ /* user dismissed before */ }
+  else if(isIos()){
+    setTimeout(function(){ if(iosHint) iosHint.classList.add('show'); }, 1200);
+  }
+
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    deferredPrompt=e;
+    if(localStorage.getItem(DISMISS_KEY)!=='1' && bar) bar.classList.add('show');
+  });
+
+  if(btn) btn.addEventListener('click', function(){
+    if(bar) bar.classList.remove('show');
+    if(!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function(){ deferredPrompt=null; });
+  });
+  if(closeBtn) closeBtn.addEventListener('click', function(){
+    if(bar) bar.classList.remove('show');
+    localStorage.setItem(DISMISS_KEY,'1');
+  });
+  if(iosHintClose) iosHintClose.addEventListener('click', function(){
+    if(iosHint) iosHint.classList.remove('show');
+    localStorage.setItem(DISMISS_KEY,'1');
+  });
+  window.addEventListener('appinstalled', function(){
+    if(bar) bar.classList.remove('show');
+  });
+})();
+
 </script>
 </body>
 </html>
