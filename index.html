@@ -22,18 +22,30 @@ h1{margin:0;font-size:24px;font-weight:800;color:var(--g)}
 header p{margin:2px 0 0;color:var(--mute);font-size:14px}
 section{display:none;padding:8px 16px}
 section.on{display:block}
-.chips{display:flex;gap:8px;overflow-x:auto;padding:8px 0 12px}
-.chip{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:8px 16px;font:inherit;font-size:14px;white-space:nowrap}
-.chip.on{background:var(--g);color:#fff;border-color:var(--g)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.p{background:var(--card);border-radius:16px;overflow:hidden;border:1px solid var(--line)}
-.ph{height:96px;display:grid;place-items:center;font-size:54px;background:var(--g2)}
-.pb{padding:10px 12px 12px}
-.pb b{display:block;font-size:16px}
-.pb small{color:var(--mute)}
-.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
-.price{font-weight:800;font-size:16px}
-.add{background:var(--g);color:#fff;border:0;border-radius:10px;width:36px;height:36px;font-size:22px;line-height:1}
+.chips{display:flex;gap:10px;overflow-x:auto;padding:10px 0 16px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{border:none;background:var(--card);color:var(--ink);border-radius:22px;padding:10px 18px;font:inherit;font-size:14px;font-weight:600;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.08);transition:transform .15s}
+.chip.on{background:linear-gradient(135deg,var(--g),#2d7a47);color:#fff;box-shadow:0 4px 12px rgba(31,91,52,.35)}
+.chip:active{transform:scale(.96)}
+.catColors{--c1:#FFEAD1;--c2:#D7F0E3;--c3:#D9E9FB;--c4:#FBE1EC;--c5:#FFF3C4;--c6:#E3DEF8}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.p{background:var(--card);border-radius:20px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.07);transition:transform .15s,box-shadow .15s}
+.p:active{transform:scale(.98)}
+.ph{height:124px;display:grid;place-items:center;font-size:58px;background:var(--g2);position:relative;overflow:hidden}
+.ph img{transition:transform .25s}
+.p:active .ph img{transform:scale(1.05)}
+.pb{padding:12px 13px 14px}
+.pb b{display:block;font-size:15px;font-weight:700;margin-bottom:2px}
+.pb small{color:var(--mute);font-size:12px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px}
+.price{font-weight:800;font-size:16px;color:var(--g)}
+.add{background:linear-gradient(135deg,var(--g),#2d7a47);color:#fff;border:0;border-radius:12px;width:34px;height:34px;font-size:20px;line-height:1;box-shadow:0 3px 8px rgba(31,91,52,.3)}
+.add:active{transform:scale(.9)}
+.catGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:4px 0 18px}
+.catTile{border-radius:16px;padding:12px 10px 10px;text-align:center;cursor:pointer;border:none;font:inherit;box-shadow:0 2px 8px rgba(0,0,0,.06);transition:transform .15s}
+.catTile:active{transform:scale(.95)}
+.catTile .ci{font-size:34px;display:block;margin-bottom:6px}
+.catTile .cn{font-size:12.5px;font-weight:700;color:var(--ink)}
 button{font-family:inherit;cursor:pointer}
 button:focus-visible{outline:3px solid var(--t);outline-offset:2px}
 .li{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin-bottom:10px}
@@ -215,10 +227,24 @@ function go(t){
   document.querySelectorAll("nav button").forEach(function(b){b.classList.toggle("on",b.dataset.t===t)});
   window.scrollTo(0,0);draw();
 }
+var CAT_STYLE={
+  "خضار":{bg:"#D7F0E3",emoji:"🥦"},
+  "فواكه":{bg:"#FFEAD1",emoji:"🍇"},
+  "ورقيات":{bg:"#DFF4CE",emoji:"🌿"}
+};
+function catTileColor(c,i){
+  var palette=["#FFEAD1","#D7F0E3","#D9E9FB","#FBE1EC","#FFF3C4","#E3DEF8"];
+  return (CAT_STYLE[c]&&CAT_STYLE[c].bg)||palette[i%palette.length];
+}
 function shop(){
-  $("chips").innerHTML=CATS.map(function(c){return '<button class="chip'+(c===cat?' on':'')+'" data-c="'+c+'">'+c+'</button>'}).join("");
+  var realCats=CATS.filter(function(c){return c!=="الكل"});
+  $("chips").innerHTML='<div class="catGrid">'+realCats.map(function(c,i){
+    var st=CAT_STYLE[c]||{};
+    return '<button class="catTile" data-c="'+c+'" style="background:'+catTileColor(c,i)+'"><span class="ci">'+(st.emoji||"🛒")+'</span><span class="cn">'+c+'</span></button>'
+  }).join("")+'</div>'+
+  CATS.map(function(c){return '<button class="chip'+(c===cat?' on':'')+'" data-c="'+c+'">'+c+'</button>'}).join("");
   $("grid").innerHTML=P.filter(function(p){return cat==="الكل"||p.c===cat}).map(function(p){
-    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">':p.e)+'</div><div class="pb"><b>'+p.n+'</b><small>للـ'+p.u+'</small><div class="row"><span class="price">'+money(p.p)+'</span><button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'">+</button></div></div></div>'}).join("");
+    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">':p.e)+'</div><div class="pb"><b>'+p.n+'</b><small>للـ'+p.u+'</small><div class="row"><span class="price">'+money(p.p)+'</span><button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'">+</button></div></div></div>'}).join("");
 }
 function sub(){return P.reduce(function(s,p){return s+(cart[p.id]||0)*p.p},0)}
 function count(){return Object.values(cart).reduce(function(a,b){return a+b},0)}
