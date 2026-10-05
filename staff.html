@@ -93,6 +93,9 @@ html[data-boot="app"] #app{display:block!important}
 
 <section id="store"></section>
 <section id="driver"></section>
+<section id="watchPrep"></section>
+<section id="watchDel"></section>
+<section id="delayed"></section>
 <section id="categories"></section>
 <section id="products"></section>
 <section id="stock"></section>
@@ -130,7 +133,7 @@ var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["watchPrep","👀","متابعة التجهيز"],["watchDel","👀","متابعة التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -142,7 +145,8 @@ function go(t){
   document.querySelectorAll("nav button").forEach(function(b){b.classList.toggle("on",b.dataset.t===t)});
   window.scrollTo(0,0);
   if(t==="team")teamLoad();
-  if(t==="store"||t==="driver")ordLoad();
+  if(t==="store"||t==="driver"||t==="watchPrep"||t==="watchDel")ordLoad();
+  if(t==="delayed")delayedLoad();
   if(t==="categories")catLoad();
   if(t==="products")prodLoad();
   if(t==="stock")stockLoad();
@@ -270,13 +274,35 @@ function ordV(){
     $("store").innerHTML='<h1 style="font-size:19px">🧑‍🍳 التجهيز</h1>'+errBanner()+
       '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التجهيز ('+wp.length+')</h2>'+(wp.length?wp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التجهيز.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">🔧 جاري التجهيز ('+pp.length+')</h2>'+(pp.length?pp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات قيد التجهيز حاليًا.</p>');
+    if(ROLE==="admin"){
+      $("watchPrep").innerHTML='<h1 style="font-size:19px">👀 متابعة التجهيز (عرض فقط)</h1>'+errBanner()+
+        '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التجهيز ('+wp.length+')</h2>'+(wp.length?wp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التجهيز.</p>')+
+        '<h2 style="font-size:15px;margin:16px 0 6px">🔧 جاري التجهيز ('+pp.length+')</h2>'+(pp.length?pp.map(function(o){return ocard(o,"prep")}).join(""):'<p class="mute">لا توجد طلبات قيد التجهيز حاليًا.</p>');
+    }
   }
   if(ROLE==="delivery"||ROLE==="admin"){
     var wd=SO.del.filter(function(o){return o.status==="awaiting_delivery"}),od=SO.del.filter(function(o){return o.status==="on_the_way"});
     $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1>'+errBanner()+
       '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التوصيل ('+wd.length+')</h2>'+(wd.length?wd.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التوصيل.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">🛵 في الطريق ('+od.length+')</h2>'+(od.length?od.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات في الطريق حاليًا.</p>');
+    if(ROLE==="admin"){
+      $("watchDel").innerHTML='<h1 style="font-size:19px">👀 متابعة التوصيل (عرض فقط)</h1>'+errBanner()+
+        '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التوصيل ('+wd.length+')</h2>'+(wd.length?wd.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التوصيل.</p>')+
+        '<h2 style="font-size:15px;margin:16px 0 6px">🛵 في الطريق ('+od.length+')</h2>'+(od.length?od.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات في الطريق حاليًا.</p>');
+    }
   }
+}
+
+/* ---------- delayed orders report (admin only) ---------- */
+function delayedLoad(){
+  apiCall("GET","/orders/delayed").then(function(r){
+    $("delayed").innerHTML='<h1 style="font-size:19px">⏰ الطلبات المتأخرة</h1><p class="mute" style="margin:0 0 10px">طلبات مرّ عليها أكثر من 30 دقيقة من التأكيد ولم تُسلَّم بعد.</p>'+
+      (Array.isArray(r)&&r.length?r.map(function(o){
+        var mins=Math.floor((Date.now()-new Date(o.created_at).getTime())/60000);
+        return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+' · '+esc(o.customer_phone)+(o.address?'<br>📍 '+esc(o.address):'')+
+          '<p style="color:var(--t);font-weight:700;margin:8px 0 0">متأخر منذ '+mins+' دقيقة</p>'+timesBlock(o)+'</div>';
+      }).join(""):'<p class="mute">لا توجد طلبات متأخرة حاليًا 🎉</p>');
+  }).catch(function(){});
 }
 setInterval(function(){if(TOK)ordLoad()},15000);
 

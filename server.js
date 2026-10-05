@@ -380,6 +380,18 @@ app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, 
   res.json(await withItems(r.rows));
 });
 
+// Admin-only: orders confirmed more than 30 minutes ago that are still not delivered.
+app.get('/orders/delayed', requireAuth('admin'), async (req, res) => {
+  const r = await pool.query(
+    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
+     FROM orders o JOIN customers c ON c.id = o.customer_id
+     WHERE o.status NOT IN ('delivered','cancelled')
+       AND o.created_at < now() - interval '30 minutes'
+     ORDER BY o.created_at`
+  );
+  res.json(await withItems(r.rows));
+});
+
 app.get('/orders', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
