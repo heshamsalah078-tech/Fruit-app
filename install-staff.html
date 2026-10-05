@@ -74,16 +74,22 @@
     deferredPrompt.prompt();
     deferredPrompt.userChoice.then(function(choice){
       if(choice.outcome==='accepted'){
-        status.textContent='تم التثبيت بنجاح ✅';
+        status.textContent='تم التثبيت بنجاح ✅ افتح التطبيق من الشاشة الرئيسية.';
+        btn.style.display='none';
+        manualLink.style.display='inline-block';
+        manualLink.textContent='أو اضغط هنا لفتح التطبيق الآن';
+      }else{
+        status.textContent='';
       }
       deferredPrompt=null;
-      setTimeout(function(){ location.href=REDIRECT; }, 800);
     });
   });
 
   window.addEventListener('appinstalled', function(){
-    status.textContent='تم التثبيت بنجاح ✅ جارٍ فتح التطبيق...';
-    setTimeout(function(){ location.href=REDIRECT; }, 600);
+    status.textContent='تم التثبيت بنجاح ✅ افتح التطبيق من الشاشة الرئيسية.';
+    btn.style.display='none';
+    manualLink.style.display='inline-block';
+    manualLink.textContent='أو اضغط هنا لفتح التطبيق الآن';
   });
 
   // fallback: if no install prompt fires within 4s (already installed via another route, or unsupported), show manual link
@@ -93,6 +99,8 @@
     }
   }, 4000);
 })();
+
+if("serviceWorker" in navigator){navigator.serviceWorker.register("/install-sw.js").catch(function(){})}
 </script>
 </body>
 </html>
