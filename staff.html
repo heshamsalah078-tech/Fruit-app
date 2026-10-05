@@ -86,6 +86,7 @@ table th{color:var(--mute);font-weight:600}
 
 <section id="store"></section>
 <section id="driver"></section>
+<section id="categories"></section>
 <section id="products"></section>
 <section id="stock"></section>
 <section id="team"></section>
@@ -122,7 +123,7 @@ var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -135,6 +136,7 @@ function go(t){
   window.scrollTo(0,0);
   if(t==="team")teamLoad();
   if(t==="store"||t==="driver")ordLoad();
+  if(t==="categories")catLoad();
   if(t==="products")prodLoad();
   if(t==="stock")stockLoad();
 }
@@ -159,12 +161,33 @@ function teamV(){
   if(e)$("tR").value=e.role;
 }
 
+/* ---------- categories (admin only) ---------- */
+var CATL=[],editCid=0;
+var SWATCHES=["#D7F0E3","#FFEAD1","#D9E9FB","#FBE1EC","#FFF3C4","#E3DEF8"];
+function catLoad(){apiCall("GET","/categories").then(function(r){CATL=Array.isArray(r)?r:[];catV()}).catch(function(){})}
+function catV(){
+  var el=$("categories");if(!el)return;
+  var e=CATL.find(function(c){return c.id===editCid});
+  el.innerHTML='<h1 style="font-size:19px">🗂️ إدارة الأقسام</h1>'+
+    (CATL.length?CATL.map(function(c){return '<div class="card row"><div style="display:flex;align-items:center;gap:10px"><span style="background:'+esc(c.color)+';border-radius:10px;padding:6px 10px;font-size:20px">'+esc(c.emoji)+'</span><b>'+esc(c.name)+'</b></div><div><button class="chip" data-ce="'+c.id+'">تعديل</button> <button class="chip" style="color:var(--t)" data-cd="'+c.id+'">حذف</button></div></div>'}).join(''):'<p class="mute">لا توجد أقسام بعد.</p>')+
+    '<div class="card"><h2>'+(e?'تعديل قسم':'إضافة قسم جديد')+'</h2>'+
+    '<input id="cN" placeholder="اسم القسم" value="'+esc(e&&e.name)+'">'+
+    '<input id="cE" placeholder="إيموجي (مثال 🥦)" value="'+esc(e&&e.emoji)+'">'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" id="cColors">'+SWATCHES.map(function(s){return '<button type="button" class="chip" data-sw="'+s+'" style="background:'+s+';width:36px;height:36px;padding:0;border-radius:10px"></button>'}).join('')+'</div>'+
+    '<input id="cColor" type="hidden" value="'+(e?esc(e.color):SWATCHES[0])+'">'+
+    '<input id="cOrder" type="number" placeholder="ترتيب الظهور (اختياري)" value="'+(e?e.sort_order:"")+'">'+
+    '<button class="big" id="cAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+
+    (e?' <button class="chip" id="cCan" style="margin-top:8px">إلغاء</button>':'')+
+    '<p id="cErr" style="color:var(--t)"></p></div>';
+}
+
 /* ---------- products (admin only) ---------- */
 var PR=[],editPid=0;
 function prodLoad(){apiCall("GET","/products").then(function(r){PR=Array.isArray(r)?r:[];prodV()}).catch(function(){})}
 function prodV(){
   var el=$("products");if(!el)return;
   var e=PR.find(function(p){return p.id===editPid});
+  var catOpts=CATL.length?CATL.map(function(c){return '<option value="'+esc(c.name)+'">'+esc(c.name)+'</option>'}).join(''):'<option value="">أضف قسمًا أولًا من تبويب الأقسام</option>';
   el.innerHTML='<h1 style="font-size:19px">🥕 إدارة المنتجات</h1>'+
     (PR.length?PR.map(function(p){return '<div class="card row"><div><b>'+(p.emoji||"")+' '+esc(p.name)+'</b><br><span class="mute">'+p.price+' ج.م / '+esc(p.unit)+' · '+esc(p.category)+'</span></div><div><button class="chip" data-pe="'+p.id+'">تعديل</button> <button class="chip" style="color:var(--t)" data-pd="'+p.id+'">حذف</button></div></div>'}).join(''):'<p class="mute">لا توجد منتجات بعد.</p>')+
     '<div class="card"><h2>'+(e?'تعديل منتج':'إضافة منتج جديد')+'</h2>'+
@@ -173,7 +196,7 @@ function prodV(){
     '<input id="pImg" placeholder="رابط صورة (اختياري)" value="'+esc(e&&e.image_url)+'">'+
     '<input id="pP" type="number" placeholder="السعر" value="'+(e?e.price:"")+'">'+
     '<select id="pU"><option value="كيلو">كيلو</option><option value="حزمة">حزمة</option><option value="قطعة">قطعة</option></select>'+
-    '<select id="pC"><option value="خضار">خضار</option><option value="فواكه">فواكه</option><option value="ورقيات">ورقيات</option></select>'+
+    '<select id="pC">'+catOpts+'</select>'+
     (e?'':'<input id="pS" type="number" placeholder="الكمية الأولية بالمخزون" value="0">')+
     '<button class="big" id="pAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+
     (e?' <button class="chip" id="pCan" style="margin-top:8px">إلغاء</button>':'')+
@@ -342,6 +365,30 @@ if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catc
     req.then(function(r){
       if(r.id||r.ok){toast("تم الحفظ");editId=0;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
     }).catch(function(){$("tErr").textContent="تعذّر الاتصال بالسيرفر"});
+    return;
+  }
+
+  if(t.dataset.ce){editCid=Number(t.dataset.ce);catV();return}
+  if(t.id==="cCan"){editCid=0;catV();return}
+  if(t.dataset.cd){
+    if(!confirm("حذف هذا القسم نهائيًا؟"))return;
+    apiCall("DELETE","/categories/"+t.dataset.cd).then(function(r){
+      if(r&&r.error){toast(r.message||"تعذّر الحذف")}else{toast("تم الحذف");catLoad()}
+    });
+    return;
+  }
+  if(t.dataset.sw){
+    $("cColor").value=t.dataset.sw;
+    document.querySelectorAll('#cColors button').forEach(function(b){b.style.outline=b.dataset.sw===t.dataset.sw?'3px solid var(--ink)':'none'});
+    return;
+  }
+  if(t.id==="cAdd"){
+    var cb={name:$("cN").value.trim(),emoji:$("cE").value.trim()||"🛒",color:$("cColor").value,sort_order:Number($("cOrder").value||0)};
+    if(!cb.name){$("cErr").textContent="أدخل اسم القسم";return}
+    var creq=editCid?apiCall("PUT","/categories/"+editCid,cb):apiCall("POST","/categories",cb);
+    creq.then(function(r){
+      if(r.id){toast("تم الحفظ");editCid=0;catLoad()}else{$("cErr").textContent=r.message||"تعذّر الحفظ"}
+    }).catch(function(){$("cErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
   }
 

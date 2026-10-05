@@ -58,6 +58,48 @@ function requireAuth(...roles) {
   };
 }
 
+// ---- CATEGORIES ----
+app.get('/categories', async (req, res) => {
+  const r = await pool.query('SELECT * FROM categories ORDER BY sort_order, id');
+  res.json(r.rows);
+});
+
+app.post('/categories', requireAuth('admin'), async (req, res) => {
+  const { name, emoji, color, sort_order } = req.body;
+  if (!name) return res.status(400).json({ error: 'missing_name', message: 'اسم القسم مطلوب.' });
+  try {
+    const r = await pool.query(
+      'INSERT INTO categories (name, emoji, color, sort_order) VALUES ($1,$2,$3,$4) RETURNING *',
+      [name, emoji || '🛒', color || '#D7F0E3', sort_order || 0]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'duplicate', message: 'يوجد قسم بنفس الاسم بالفعل.' });
+    throw e;
+  }
+});
+
+app.put('/categories/:id', requireAuth('admin'), async (req, res) => {
+  const { name, emoji, color, sort_order } = req.body;
+  const r = await pool.query(
+    'UPDATE categories SET name=$1, emoji=$2, color=$3, sort_order=$4 WHERE id=$5 RETURNING *',
+    [name, emoji, color, sort_order, req.params.id]
+  );
+  if (!r.rows.length) return res.status(404).json({ error: 'not_found', message: 'القسم غير موجود.' });
+  res.json(r.rows[0]);
+});
+
+app.delete('/categories/:id', requireAuth('admin'), async (req, res) => {
+  const cat = await pool.query('SELECT name FROM categories WHERE id=$1', [req.params.id]);
+  if (!cat.rows.length) return res.status(404).json({ error: 'not_found', message: 'القسم غير موجود.' });
+  const inUse = await pool.query('SELECT COUNT(*) FROM products WHERE category=$1', [cat.rows[0].name]);
+  if (Number(inUse.rows[0].count) > 0) {
+    return res.status(409).json({ error: 'category_in_use', message: 'لا يمكن حذف قسم يحتوي على منتجات، احذف أو انقل المنتجات أولًا.' });
+  }
+  await pool.query('DELETE FROM categories WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
 // ---- PRODUCTS ----
 app.get('/products', async (req, res) => {
   const r = await pool.query('SELECT * FROM products WHERE in_stock = true ORDER BY id');
