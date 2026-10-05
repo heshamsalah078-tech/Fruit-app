@@ -239,9 +239,9 @@ app.get('/customers', requireAuth('admin'), async (req, res) => {
 
 // ---- STOCK (inventory) ----
 // Internal helper: record a stock movement and update the product's stock_qty in one transaction.
-// type: 'purchase' | 'sale' | 'return' | 'waste'. quantity is always positive.
+// type: 'purchase' | 'sale' | 'return' | 'waste' | 'cancel_restock'. quantity is always positive.
 async function moveStock(client, { product_id, type, quantity, note, order_id, staff_id }) {
-  const sign = (type === 'purchase' || type === 'return') ? 1 : -1;
+  const sign = (type === 'purchase' || type === 'return' || type === 'cancel_restock') ? 1 : -1;
   await client.query(
     'UPDATE products SET stock_qty = stock_qty + $1 WHERE id = $2',
     [sign * quantity, product_id]
@@ -438,7 +438,7 @@ app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, re
     }
     const items = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id=$1', [order.id]);
     for (const it of items.rows) {
-      await moveStock(client, { product_id: it.product_id, type: 'return', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب' });
+      await moveStock(client, { product_id: it.product_id, type: 'cancel_restock', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب قبل التسليم' });
     }
     const r = await client.query("UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *", [order.id]);
     await client.query('COMMIT');

@@ -40,19 +40,15 @@ section.on{display:block}
 .add:active{transform:scale(.88)}
 .chip{background:#fff!important;border:1.5px solid #e4e4e4!important;box-shadow:none!important;color:var(--mute)!important}
 .chip.on{background:var(--g)!important;border-color:var(--g)!important;color:#fff!important}
-.catGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:4px 0 14px}
-.catTile{border-radius:18px;padding:12px 10px;cursor:pointer;border:none;font:inherit;min-height:128px;display:flex;flex-direction:column;justify-content:space-between;align-items:stretch;text-align:right;box-shadow:0 2px 8px rgba(0,0,0,.06);transition:transform .15s;overflow:hidden}
-.catTile:active{transform:scale(.95)}
-.catTile .cn{font-size:13.5px;font-weight:800;color:var(--ink);line-height:1.35}
-.catTile .ci{font-size:54px;line-height:1;align-self:flex-start;margin-top:8px}
-.secH{font-size:21px;font-weight:800;margin:6px 2px 10px}
-.allBtn{display:block;width:100%;border:none;background:var(--card);color:var(--g);font:inherit;font-weight:700;font-size:14px;padding:13px;border-radius:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:14px}
-.backRow{display:flex;align-items:center;gap:10px;margin:4px 0 12px}
+.catGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;padding:4px 0 18px}
+.catTile{border-radius:20px;padding:16px;cursor:pointer;border:none;font:inherit;min-height:148px;display:flex;flex-direction:column;justify-content:space-between;align-items:stretch;text-align:right;box-shadow:0 2px 8px rgba(0,0,0,.07);transition:transform .15s;overflow:hidden}
+.catTile:active{transform:scale(.96)}
+.catTile .cn{font-size:16px;font-weight:800;color:var(--ink);line-height:1.3}
+.catTile .ci{font-size:64px;line-height:1;align-self:flex-start}
+.secH{font-size:22px;font-weight:800;margin:6px 2px 14px}
+.backRow{display:flex;align-items:center;gap:10px;margin:4px 0 16px}
 .backBtn{border:none;background:none;width:36px;height:36px;font-size:26px;color:var(--g);padding:0}
-.catName{border:none;background:none;font:inherit;font-size:20px;font-weight:800;color:var(--g);padding:0;display:flex;align-items:center;gap:6px}
-.catMenu{background:#fff;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,.12);margin:0 0 12px;overflow:hidden}
-.catMenu button{display:block;width:100%;text-align:right;border:none;background:none;font:inherit;font-size:15px;font-weight:600;padding:12px 16px;border-bottom:1px solid #f0f0f0;color:var(--ink)}
-.catMenu button.on{color:var(--g);font-weight:800}
+.catName{font-size:21px;font-weight:800;color:var(--g)}
 .subChips{display:flex;gap:8px;overflow-x:auto;padding:0 0 12px;scrollbar-width:none}
 .subChips::-webkit-scrollbar{display:none}
 button{font-family:inherit;cursor:pointer}
@@ -222,12 +218,13 @@ function refreshMyOrders(){
 }
 setInterval(function(){if(TOK&&ROLE==="customer")refreshMyOrders()},12000);
 fetch(API+"/products").then(function(r){return r.json()}).then(function(a){if(a&&a.length){P=a.map(function(x){return {id:x.id,n:x.name,e:x.emoji,img:x.image_url||"",p:Number(x.price),u:x.unit,c:x.category}});nextPid=pMax()+1;draw()}}).catch(function(){});
-var CATS=["الكل"],CATMETA=[],cat="",menuOpen=false,cart={},orders=[],friends=2,used=0;
+var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[],friends=2,used=0;
 fetch(API+"/categories").then(function(r){return r.json()}).then(function(a){if(a&&a.length){CATMETA=a;CATS=["الكل"].concat(a.map(function(c){return c.name}));draw()}}).catch(function(){});
 var STATUS_SEQ=["awaiting_prep","preparing","awaiting_delivery","on_the_way","delivered"];
 var STATUS_LABELS={awaiting_prep:"بانتظار التجهيز",preparing:"جارٍ التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق إليك",delivered:"تم التسليم",cancelled:"تم الإلغاء"};
 function stDt(s){if(!s)return null;return new Date(s).toLocaleString("ar-EG",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
 function $(i){return document.getElementById(i)}
+function esc(x){return String(x==null?"":x).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]})}
 function num(n){return n.toLocaleString("ar-EG")}
 function money(n){return num(n)+" "+CUR}
 function toast(t){var x=$("toast");x.textContent=t;x.className="show";setTimeout(function(){x.className=""},1600)}
@@ -242,13 +239,13 @@ function shop(){
   var home=(cat==="");
   if(home){
     $("chips").innerHTML='<div class="secH">جميع الأقسام</div><div class="catGrid">'+CATMETA.map(function(c,i){
-      return '<button class="catTile" data-c="'+c.name+'" style="background:'+(c.color||FALLBACK_PALETTE[i%FALLBACK_PALETTE.length])+'"><span class="cn">'+c.name+'</span><span class="ci">'+(c.emoji||"🛒")+'</span></button>'
-    }).join("")+'</div><button class="allBtn" data-c="الكل">🛍️ عرض كل المنتجات</button>';
-    $("grid").innerHTML="";return;
+      return '<button class="catTile" data-c="'+c.name+'" style="background:'+(c.color||FALLBACK_PALETTE[i%FALLBACK_PALETTE.length])+'"><span class="ci">'+(c.emoji||"🛒")+'</span><span class="cn">'+c.name+'</span></button>'
+    }).join("")+'</div>';
+    $("grid").innerHTML="";
+    return;
   }
-  $("chips").innerHTML='<div class="backRow"><button class="backBtn" data-c="" aria-label="رجوع">→</button><button class="catName" data-mn="1">'+(cat==="الكل"?"كل المنتجات":cat)+' <span style="font-size:14px">'+(menuOpen?"▴":"▾")+'</span></button></div>'+
-    (menuOpen?'<div class="catMenu">'+CATS.map(function(c){return '<button data-c="'+c+'" class="'+(c===cat?'on':'')+'">'+(c==="الكل"?"كل المنتجات":c)+'</button>'}).join("")+'</div>':'');
-  var list=P.filter(function(p){return cat==="الكل"||p.c===cat});
+  $("chips").innerHTML='<div class="backRow"><button class="backBtn" data-c="" aria-label="رجوع">→</button><span class="catName">'+esc(cat)+'</span></div>';
+  var list=P.filter(function(p){return p.c===cat});
   $("grid").innerHTML=list.length?list.map(function(p){
     return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'">+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>';
 }
@@ -272,8 +269,9 @@ function timesFor(o){
   return lines.length?'<div class="mute" style="font-size:12px;line-height:1.9;margin-top:8px">'+lines.join("<br>")+'</div>':'';
 }
 function ordV(){
-  if(!orders.length){$("orders").innerHTML='<div class="empty"><div style="font-size:56px">🚚</div>لا توجد طلبات بعد.</div>';return}
-  $("orders").innerHTML=orders.map(function(o,i){
+  var live=orders.filter(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"});
+  if(!live.length){$("orders").innerHTML='<div class="empty"><div style="font-size:56px">🚚</div>لا توجد طلبات حالية.</div>';return}
+  $("orders").innerHTML=live.map(function(o,i){
     var h='<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+(o.items?num(o.items)+' منتجات · ':'')+money(o.total)+'</div>';
     if(o.status==="cancelled")return h+'<p><b>تم إلغاء الطلب</b></p>'+timesFor(o)+'</div>';
     if(o.pay)h+='<p class="mute">حالة الدفع: '+(o.pay==="due"?"الدفع عند الاستلام عبر فودافون كاش":o.pay==="pending"?"بانتظار تأكيد التحويل رقم "+o.ref:"تم تأكيد الدفع")+'</p>';
@@ -282,7 +280,7 @@ function ordV(){
     if(o.status==="on_the_way")h+='<div class="tot"><b>ادفع عند الاستلام</b>'+(payErr?'<p style="color:var(--t);font-weight:700;margin:8px 0">'+payErr+'</p>':'')+'<p class="mute">حوّل '+money(o.total)+' إلى فودافون كاش على الرقم 010XXXXXXXX ثم أدخل رقم العملية.</p><input id="payref" placeholder="رقم العملية" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit"><button class="big" style="background:var(--g)" data-r="'+o.id+'">تأكيد الاستلام والدفع</button></div>';
     if(o.status==="awaiting_prep"||o.status==="preparing")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب مجانًا</button>';
     else if(o.status==="awaiting_delivery"||o.status==="on_the_way")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب (رسوم التوصيل لا تُسترد)</button>';
-    if(o.status==="delivered")h+=o.rq?'<p class="mute">تم تسجيل طلب الإرجاع أو الاسترداد. سيتواصل معك فريق الدعم.</p>':'<button class="chip" style="margin-top:12px" data-q="'+o.id+'">طلب إرجاع أو استرداد</button>';
+
     return h+'</div>'}).join("");
 }
 function roleCard(o,i,txt,btn,k){
@@ -322,8 +320,7 @@ document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   var d=t.dataset;
   if(d.t)go(d.t);
-  else if(d.mn){menuOpen=!menuOpen;draw()}
-  else if(d.c!==undefined){cat=d.c;menuOpen=false;window.scrollTo(0,0);draw()}
+  else if(d.c!==undefined){cat=d.c;window.scrollTo(0,0);draw()}
   else if(d.a){cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw()}
   else if(d.m){cart[d.m]--;if(!cart[d.m])delete cart[d.m];draw()}
   else if(d.k){var o=orders[d.i];

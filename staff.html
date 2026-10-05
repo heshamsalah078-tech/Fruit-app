@@ -54,9 +54,16 @@ table th{color:var(--mute);font-weight:600}
 #iosHint.show{display:block}
 #iosHint b{color:#1F5B34}
 #iosHint .close{position:absolute;top:6px;left:10px;cursor:pointer;color:#888;font-size:16px}
+html[data-boot="auth"] #authScreen{display:block!important}
+html[data-boot="auth"] #app{display:none!important}
+html[data-boot="app"] #authScreen{display:none!important}
+html[data-boot="app"] #app{display:block!important}
+#bootHi{opacity:.0;transition:opacity .15s}
+#bootHi.ready{opacity:1}
 </style>
 </head>
 <body>
+<script>(function(){var t=localStorage.getItem('sf_tok'),r=localStorage.getItem('sf_role');document.documentElement.setAttribute('data-boot', (t&&r)?'app':'auth');})();</script>
 
 <div id="installBar">
   <span>📲 ثبّت التطبيق على شاشتك الرئيسية لسهولة الاستخدام</span>
@@ -70,7 +77,7 @@ table th{color:var(--mute);font-weight:600}
   لتثبيت التطبيق على الآيفون: اضغط زر <b>المشاركة</b> ⬆️ في سفاري، ثم اختر <b>"إضافة إلى الشاشة الرئيسية"</b>.
 </div>
 
-<div id="authScreen" class="authwrap">
+<div id="authScreen" class="authwrap" style="display:none">
   <h1>🥬 لوحة الموظفين</h1>
   <p class="mute">سجّل الدخول برقم موبايلك وكلمة السر.</p>
   <div class="card">
@@ -206,7 +213,7 @@ function prodV(){
 
 /* ---------- stock (admin only) ---------- */
 var STK={products:[],movements:[]};
-var TYN={purchase:"شراء",sale:"بيع",return:"مرتجع",waste:"تالف"};
+var TYN={purchase:"شراء",sale:"بيع",return:"مرتجع",waste:"تالف",cancel_restock:"إلغاء طلب (رجوع للمخزون)"};
 function stockLoad(){apiCall("GET","/stock").then(function(r){STK=r.products?r:{products:[],movements:[]};stockV()}).catch(function(){})}
 function stockV(){
   var el=$("stock");if(!el)return;
@@ -275,7 +282,12 @@ setInterval(function(){if(TOK)ordLoad()},15000);
 
 /* ---------- auth ---------- */
 function startApp(){
-  if(!TOK||!ROLE){$("authScreen").style.display="block";$("app").style.display="none";return}
+  if(!TOK||!ROLE){
+    document.documentElement.setAttribute("data-boot","auth");
+    $("authScreen").style.display="block";$("app").style.display="none";
+    return;
+  }
+  document.documentElement.setAttribute("data-boot","app");
   $("authScreen").style.display="none";$("app").style.display="block";
   $("hi").textContent="أهلاً "+(MYNAME||"")+" 👋";
   buildNav();
