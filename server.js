@@ -23,8 +23,8 @@ function pageRoute(base, file) {
 }
 app.get('/customer', pageRoute('/customer', 'index.html'));
 app.get('/staff', pageRoute('/staff', 'staff.html'));
-app.get('/install/customer', (req, res) => res.sendFile(require('path').join(__dirname, 'install-customer.html')));
-app.get('/install/staff', (req, res) => res.sendFile(require('path').join(__dirname, 'install-staff.html')));
+app.get('/customer/install', (req, res) => res.sendFile(require('path').join(__dirname, 'install-customer.html')));
+app.get('/staff/install', (req, res) => res.sendFile(require('path').join(__dirname, 'install-staff.html')));
 process.on('unhandledRejection', (e) => console.error('unhandled', e));
 
 const pool = new Pool({
