@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>سوق الطازج - الموظفين</title>
+<link rel="manifest" href="/staff-manifest.json">
+<meta name="theme-color" content="#1F5B34">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0E1F14;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;text-align:center;padding:24px}
+  .logo{font-size:64px;margin-bottom:8px}
+  h1{font-size:22px;margin:0 0 6px;color:#9BE3AE}
+  p.sub{color:#bcd;font-size:14px;margin:0 0 36px;max-width:320px}
+  #installBtn{background:#1F5B34;color:#fff;border:none;border-radius:28px;padding:18px 40px;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 4px 18px rgba(31,91,52,.5)}
+  #installBtn:active{transform:scale(.97)}
+  #status{margin-top:22px;font-size:13px;color:#8fa;min-height:18px}
+  #iosHint{display:none;margin-top:28px;background:#162;border-radius:12px;padding:16px;font-size:13px;line-height:1.8;max-width:320px;color:#dfe}
+  #iosHint b{color:#9BE3AE}
+  #manualLink{display:none;margin-top:18px;color:#9BE3AE;font-size:13px;text-decoration:underline}
+</style>
+</head>
+<body>
+  <div class="logo">🥬</div>
+  <h1>سوق الطازج - الموظفين</h1>
+  <p class="sub">اضغط الزر لتثبيت تطبيق الموظفين على شاشتك الرئيسية</p>
+  <button id="installBtn">📲 تثبيت التطبيق</button>
+  <div id="status"></div>
+  <div id="iosHint">
+    لتثبيت التطبيق على الآيفون: اضغط زر <b>المشاركة</b> ⬆️ في سفاري، ثم اختر <b>"إضافة إلى الشاشة الرئيسية"</b>.
+  </div>
+  <a id="manualLink" href="/staff/">فتح التطبيق مباشرة</a>
+
+<script>
+(function(){
+  var deferredPrompt=null;
+  var btn=document.getElementById('installBtn');
+  var status=document.getElementById('status');
+  var iosHint=document.getElementById('iosHint');
+  var manualLink=document.getElementById('manualLink');
+  var REDIRECT="/staff/";
+
+  function isStandalone(){
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+  }
+  function isIos(){
+    return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+  }
+
+  if(isStandalone()){
+    status.textContent='التطبيق مثبّت بالفعل، جارٍ التحويل...';
+    setTimeout(function(){ location.href=REDIRECT; }, 600);
+    return;
+  }
+
+  if(isIos()){
+    btn.style.display='none';
+    iosHint.style.display='block';
+    manualLink.style.display='inline-block';
+  }
+
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    deferredPrompt=e;
+    status.textContent='';
+  });
+
+  btn.addEventListener('click', function(){
+    if(!deferredPrompt){
+      status.textContent='جارٍ فتح التطبيق...';
+      setTimeout(function(){ location.href=REDIRECT; }, 500);
+      return;
+    }
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function(choice){
+      if(choice.outcome==='accepted'){
+        status.textContent='تم التثبيت بنجاح ✅';
+      }
+      deferredPrompt=null;
+      setTimeout(function(){ location.href=REDIRECT; }, 800);
+    });
+  });
+
+  window.addEventListener('appinstalled', function(){
+    status.textContent='تم التثبيت بنجاح ✅ جارٍ فتح التطبيق...';
+    setTimeout(function(){ location.href=REDIRECT; }, 600);
+  });
+
+  // fallback: if no install prompt fires within 4s (already installed via another route, or unsupported), show manual link
+  setTimeout(function(){
+    if(!deferredPrompt && manualLink.style.display==='none'){
+      manualLink.style.display='inline-block';
+    }
+  }, 4000);
+})();
+</script>
+</body>
+</html>
