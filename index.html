@@ -246,8 +246,9 @@ function shop(){
   }
   $("chips").innerHTML='<div class="backRow"><button class="backBtn" data-c="" aria-label="رجوع">→</button><span class="catName">'+esc(cat)+'</span></div>';
   var list=P.filter(function(p){return p.c===cat});
-  $("grid").innerHTML=list.length?list.map(function(p){
-    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'">+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>';
+  var lock=active();
+  $("grid").innerHTML=(lock?'<p class="mute" style="grid-column:1/-1;margin:0 0 4px">لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة.</p>':'')+(list.length?list.map(function(p){
+    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'"'+(lock?' style="opacity:.4;pointer-events:none"':'')+'>+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>');
 }
 function sub(){return P.reduce(function(s,p){return s+(cart[p.id]||0)*p.p},0)}
 function count(){return Object.values(cart).reduce(function(a,b){return a+b},0)}
@@ -321,7 +322,10 @@ document.addEventListener("click",function(e){
   var d=t.dataset;
   if(d.t)go(d.t);
   else if(d.c!==undefined){cat=d.c;window.scrollTo(0,0);draw()}
-  else if(d.a){cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw()}
+  else if(d.a){
+    if(active()){toast("لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة");return}
+    cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw();
+  }
   else if(d.m){cart[d.m]--;if(!cart[d.m])delete cart[d.m];draw()}
   else if(d.k){var o=orders[d.i];
     if(d.k==="pay"){o.pay="paid";toast("تم تأكيد الدفع")}else if(d.k==="start")o.st=1;else if(d.k==="ready"){o.ready=true;toast("الطلب جاهز للتوصيل")}

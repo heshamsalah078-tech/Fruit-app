@@ -368,13 +368,18 @@ app.get('/orders/staff/prep', requireAuth('prep', 'admin'), async (req, res) => 
   res.json(await withItems(r.rows));
 });
 
-// Delivery staff (and admin, view-only): awaiting_delivery + on_the_way orders
+// Delivery staff (and admin, view-only): awaiting_delivery + on_the_way orders,
+// plus the delivery person's own recently delivered & paid orders (last 7 days).
 app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, res) => {
   const me = req.user.role === 'admin' ? null : req.user.id;
   const r = await pool.query(
     `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status = 'awaiting_delivery' OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
+     WHERE o.status = 'awaiting_delivery'
+        OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
+        OR (o.status = 'delivered' AND o.payment_status = 'paid'
+            AND ($1::int IS NULL OR o.delivery_staff_id = $1::int)
+            AND o.delivered_at > now() - interval '7 days')
      ORDER BY o.created_at`, [me]
   );
   res.json(await withItems(r.rows));
