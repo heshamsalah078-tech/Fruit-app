@@ -316,10 +316,18 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     for (const it of items) {
       const cur = await client.query('SELECT stock_qty, name FROM products WHERE id=$1 FOR UPDATE', [it.product_id]);
       if (!cur.rows.length || Number(cur.rows[0].stock_qty) < Number(it.quantity)) {
-        await client.query('ROLLBACK');
+        const availableQty = cur.rows[0] ? cur.rows[0].stock_qty : 0;
+        const productName = cur.rows[0] ? cur.rows[0].name : 'المنتج';
+        // Log the failed attempt so admin can see who tried to order what, and when, while stock was short.
+        await client.query(
+          `INSERT INTO stock_shortage_log (customer_id, product_id, requested_qty, available_qty)
+           VALUES ($1,$2,$3,$4)`,
+          [customer_id, it.product_id, it.quantity, availableQty]
+        );
+        await client.query('COMMIT');
         return res.status(409).json({
           error: 'insufficient_stock',
-          message: 'عذرًا، الكمية المتاحة من "' + (cur.rows[0] ? cur.rows[0].name : 'المنتج') + '" لا تكفي.'
+          message: 'عذرًا، الكمية المتاحة من "' + productName + '" لا تكفي.'
         });
       }
     }
@@ -352,6 +360,20 @@ app.get('/orders/customer/:id', requireAuth('customer', 'admin'), async (req, re
   const r = await pool.query(
     'SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',
     [req.params.id]
+  );
+  res.json(r.rows);
+});
+
+// Admin-only: log of failed order attempts caused by insufficient stock —
+// which customer, which product, requested vs available quantity, and when.
+app.get('/stock/shortages', requireAuth('admin'), async (req, res) => {
+  const r = await pool.query(
+    `SELECT sl.*, c.name AS customer_name, c.phone AS customer_phone,
+            p.name AS product_name, p.emoji, p.unit
+     FROM stock_shortage_log sl
+     JOIN customers c ON c.id = sl.customer_id
+     JOIN products p ON p.id = sl.product_id
+     ORDER BY sl.created_at DESC LIMIT 200`
   );
   res.json(r.rows);
 });

@@ -97,6 +97,8 @@ html[data-boot="app"] #app{display:block!important}
 <section id="categories"></section>
 <section id="products"></section>
 <section id="stock"></section>
+<section id="lowstock"></section>
+<section id="shortages"></section>
 <section id="team"></section>
 
 </div>
@@ -107,7 +109,8 @@ html[data-boot="app"] #app{display:block!important}
 <script>
 function $(id){return document.getElementById(id)}
 var API="https://fruit-app-production.up.railway.app";
-var TOK=localStorage.getItem("sf_tok")||"",ROLE=localStorage.getItem("sf_role")||"",MYID=Number(localStorage.getItem("sf_id")||0),MYNAME=localStorage.getItem("sf_name")||"";
+// Session is kept in memory only (not localStorage) so the app always asks to log in again each time it is opened.
+var TOK="",ROLE="",MYID=0,MYNAME="";
 
 function apiCall(method,path,body){
   var opt={method:method,headers:{"Content-Type":"application/json"}};
@@ -118,7 +121,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   });
 }
-function logout(){localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_id");localStorage.removeItem("sf_name");location.reload()}
+function logout(){TOK="";ROLE="";MYID=0;MYNAME="";location.reload()}
 function toast(t){var x=$("toast");x.textContent=t;x.className="show";setTimeout(function(){x.className=""},1600)}
 function esc(x){return String(x==null?"":x).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function dt(s){
@@ -131,7 +134,7 @@ var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -147,7 +150,9 @@ function go(t){
   if(t==="delayed"){DLY=null;delayedShell()}
   if(t==="categories")catLoad();
   if(t==="products")prodLoad();
-  if(t==="stock"){LOWSTK=null;stockLoad()}
+  if(t==="stock")stockLoad();
+  if(t==="lowstock"){LOWSTK=null;lowStockShell()}
+  if(t==="shortages"){SHORT=null;shortagesShell()}
 }
 
 /* ---------- team (admin) ---------- */
@@ -219,27 +224,43 @@ var STK={products:[],movements:[]};
 var TYN={purchase:"شراء",sale:"بيع",return:"مرتجع",waste:"تالف",cancel_restock:"إلغاء طلب (رجوع للمخزون)"};
 function stockLoad(){apiCall("GET","/stock").then(function(r){STK=r.products?r:{products:[],movements:[]};stockV()}).catch(function(){})}
 var LOWSTK=null;
+function lowStockShell(){
+  $("lowstock").innerHTML='<h1 style="font-size:19px">⚠️ الأصناف الناقصة</h1>'+
+    '<p class="mute" style="margin:0 0 10px">استعلام عن كل صنف وصلت كميته المتاحة إلى الحد الحرج المحدد له أو أقل، عشان تعيد طلبه.</p>'+
+    '<div class="card"><button class="big" id="lowGo">🔍 استعلم الآن</button></div>'+
+    lowStockBlock();
+}
 function lowStockQuery(){
-  apiCall("GET","/stock/low").then(function(r){LOWSTK=Array.isArray(r)?r:[];stockV()}).catch(function(){LOWSTK=[];stockV()});
+  apiCall("GET","/stock/low").then(function(r){LOWSTK=Array.isArray(r)?r:[];lowStockShell()}).catch(function(){LOWSTK=[];lowStockShell()});
 }
 function lowStockBlock(){
   if(LOWSTK===null)return'';
-  return '<div class="card"><h2>نتيجة الاستعلام عن الحد الحرج</h2>'+
+  return '<div class="card"><h2>نتيجة الاستعلام</h2>'+
     (LOWSTK.length?'<table><tr><th>المنتج</th><th>المتاح</th><th>الحد الحرج</th></tr>'+
       LOWSTK.map(function(p){return '<tr><td>'+(p.emoji||"")+' '+esc(p.name)+'</td><td class="lowstock">'+p.stock_qty+' '+esc(p.unit)+'</td><td>'+p.low_stock_threshold+'</td></tr>'}).join('')+'</table>'
       :'<p class="mute">لا توجد أصناف وصلت للحد الحرج حاليًا 🎉</p>')+
     '</div>';
 }
+
+/* ---------- failed order attempts due to insufficient stock (admin only) ---------- */
+var SHORT=null;
+function shortagesShell(){
+  $("shortages").innerHTML='<h1 style="font-size:19px">🚫 محاولات شراء فاشلة</h1>'+
+    '<p class="mute" style="margin:0 0 10px">محاولات عملاء لطلب كمية من صنف غير متوفرة بالكامل في المخزون، مع اسم العميل والوقت.</p>'+
+    '<div class="card"><button class="big" id="shortGo">🔍 استعلم الآن</button></div>'+
+    shortagesBlock();
+}
+function shortagesQuery(){
+  apiCall("GET","/stock/shortages").then(function(r){SHORT=Array.isArray(r)?r:[];shortagesShell()}).catch(function(){SHORT=[];shortagesShell()});
+}
+function shortagesBlock(){
+  if(SHORT===null)return'';
+  if(!SHORT.length)return '<div class="card"><p class="mute">لا توجد محاولات شراء فاشلة بسبب نقص المخزون حتى الآن 🎉</p></div>';
+  return SHORT.map(function(x){return '<div class="card"><b>'+esc(x.customer_name)+'</b> · '+esc(x.customer_phone)+'<br>حاول طلب '+(x.emoji||"")+' '+esc(x.product_name)+' × '+x.requested_qty+' '+esc(x.unit)+' — المتاح وقتها كان '+x.available_qty+' '+esc(x.unit)+'<br><span class="mute">'+dt(x.created_at)+'</span></div>'}).join('');
+}
 function stockV(){
   var el=$("stock");if(!el)return;
   el.innerHTML='<h1 style="font-size:19px">📦 إدارة المخزون</h1>'+
-    '<div class="card"><table><tr><th>المنتج</th><th>المتاح</th></tr>'+
-    STK.products.map(function(p){return '<tr><td>'+(p.emoji||"")+' '+esc(p.name)+'</td><td class="'+(Number(p.stock_qty)<=5?"lowstock":"")+'">'+p.stock_qty+' '+esc(p.unit)+'</td></tr>'}).join('')+
-    '</table></div>'+
-    '<div class="card"><h2>الأصناف التي وصلت للحد الحرج</h2>'+
-    '<p class="mute" style="margin:0 0 10px">استعلام عن كل صنف وصلت كميته المتاحة إلى الحد الحرج المحدد له أو أقل، عشان تعيد طلبه.</p>'+
-    '<button class="big" id="lowGo">🔍 استعلم الآن</button></div>'+
-    lowStockBlock()+
     '<div class="card"><h2>تسجيل حركة</h2>'+
     '<select id="sProd">'+STK.products.map(function(p){return '<option value="'+p.id+'">'+(p.emoji||"")+' '+esc(p.name)+'</option>'}).join('')+'</select>'+
     '<select id="sType"><option value="purchase">شراء (إضافة للمخزون)</option><option value="waste">تالف (خصم من المخزون)</option></select>'+
@@ -247,10 +268,9 @@ function stockV(){
     '<input id="sNote" placeholder="ملاحظة (اختياري)">'+
     '<button class="big" id="sAdd">تسجيل</button>'+
     '<p id="sErr" style="color:var(--t)"></p></div>'+
-    '<div class="card"><h2>آخر الحركات</h2>'+
-    (STK.movements.length?'<table><tr><th>المنتج</th><th>النوع</th><th>الكمية</th><th>بواسطة</th><th>الوقت</th></tr>'+
-      STK.movements.map(function(m){return '<tr><td>'+(m.emoji||"")+' '+esc(m.product_name)+'</td><td>'+TYN[m.type]+'</td><td>'+m.quantity+'</td><td>'+esc(m.staff_name||(m.order_id?"طلب #"+m.order_id:"—"))+'</td><td>'+dt(m.created_at)+'</td></tr>'}).join('')+'</table>':'<p class="mute">لا توجد حركات بعد.</p>')+
-    '</div>';
+    '<div class="card"><table><tr><th>المنتج</th><th>المتاح</th></tr>'+
+    STK.products.map(function(p){return '<tr><td>'+(p.emoji||"")+' '+esc(p.name)+'</td><td class="'+(Number(p.stock_qty)<=5?"lowstock":"")+'">'+p.stock_qty+' '+esc(p.unit)+'</td></tr>'}).join('')+
+    '</table></div>';
 }
 
 /* ---------- orders (prep + delivery) ---------- */
@@ -378,7 +398,6 @@ document.addEventListener("click",function(e){
       t.disabled=false;
       if(r.token){
         TOK=r.token;ROLE=r.staff.role;MYID=r.staff.id;MYNAME=r.staff.name;
-        localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);localStorage.setItem("sf_id",MYID);localStorage.setItem("sf_name",MYNAME);
         startApp();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 
@@ -507,6 +526,7 @@ if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catc
   if(t.id==="dlyGo"){delayedQuery();return}
   if(t.id==="storeGo"){ordQuery("store");return}
   if(t.id==="driverGo"){ordQuery("driver");return}
+  if(t.id==="shortGo"){shortagesQuery();return}
 });
 
 startApp();
