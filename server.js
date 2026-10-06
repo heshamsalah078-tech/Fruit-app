@@ -318,12 +318,21 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
       if (!cur.rows.length || Number(cur.rows[0].stock_qty) < Number(it.quantity)) {
         const availableQty = cur.rows[0] ? cur.rows[0].stock_qty : 0;
         const productName = cur.rows[0] ? cur.rows[0].name : 'المنتج';
-        // Log the failed attempt so admin can see who tried to order what, and when, while stock was short.
-        await client.query(
-          `INSERT INTO stock_shortage_log (customer_id, product_id, requested_qty, available_qty)
-           VALUES ($1,$2,$3,$4)`,
-          [customer_id, it.product_id, it.quantity, availableQty]
+        // Log the failed attempt, but only once per customer+product within a short window —
+        // if they keep tapping "add" without noticing the error, we don't want dozens of
+        // near-identical log rows for what is really a single attempt.
+        const recent = await client.query(
+          `SELECT id FROM stock_shortage_log
+           WHERE customer_id=$1 AND product_id=$2 AND created_at > now() - interval '2 minutes'`,
+          [customer_id, it.product_id]
         );
+        if (!recent.rows.length) {
+          await client.query(
+            `INSERT INTO stock_shortage_log (customer_id, product_id, requested_qty, available_qty)
+             VALUES ($1,$2,$3,$4)`,
+            [customer_id, it.product_id, it.quantity, availableQty]
+          );
+        }
         await client.query('COMMIT');
         return res.status(409).json({
           error: 'insufficient_stock',

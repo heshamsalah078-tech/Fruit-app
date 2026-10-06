@@ -248,7 +248,7 @@ function shop(){
   var list=P.filter(function(p){return p.c===cat});
   var lock=active();
   $("grid").innerHTML=(lock?'<p class="mute" style="grid-column:1/-1;margin:0 0 4px">لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة.</p>':'')+(list.length?list.map(function(p){
-    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'"'+(lock?' style="opacity:.4;pointer-events:none"':'')+'>+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>');
+    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'"'+(lock?' style="opacity:.4"':'')+'>+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>');
 }
 function sub(){return P.reduce(function(s,p){return s+(cart[p.id]||0)*p.p},0)}
 function count(){return Object.values(cart).reduce(function(a,b){return a+b},0)}
