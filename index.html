@@ -185,17 +185,73 @@ function adminV(){
   '<button class="big" id="pSave">حفظ</button><button class="chip" id="pCancel" style="margin-top:8px">إلغاء</button>';
 }
 function acctV(){
-  if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>';return}
+  if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
   $("acct").innerHTML='<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
+var cpxRecorder=null,cpxChunks=[],cpxBlob=null,cpxStream=null;
+function toggleComplaintRec(btn){
+  if(cpxRecorder&&cpxRecorder.state==="recording"){
+    cpxRecorder.stop();
+    return;
+  }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){toast("التسجيل الصوتي غير مدعوم على هذا الجهاز");return}
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+    cpxStream=stream;cpxChunks=[];
+    cpxRecorder=new MediaRecorder(stream);
+    cpxRecorder.ondataavailable=function(e){if(e.data&&e.data.size>0)cpxChunks.push(e.data)};
+    cpxRecorder.onstop=function(){
+      cpxBlob=new Blob(cpxChunks,{type:"audio/webm"});
+      var url=URL.createObjectURL(cpxBlob);
+      var prev=$("cpxAudioPreview");if(prev){prev.src=url;prev.style.display="block"}
+      var st=$("cpxRecStatus");if(st)st.textContent="تم التسجيل ✅";
+      btn.textContent="🎙️ إعادة التسجيل";
+      cpxStream.getTracks().forEach(function(tr){tr.stop()});
+    };
+    cpxRecorder.start();
+    btn.textContent="⏹️ إيقاف التسجيل";
+    var st2=$("cpxRecStatus");if(st2)st2.textContent="جاري التسجيل...";
+  }).catch(function(){toast("تعذّر الوصول إلى الميكروفون")});
+}
+function sendComplaint(btn){
+  var msg=($("cpxMsg")&&$("cpxMsg").value.trim())||"";
+  if(!msg&&!cpxBlob){$("cpxErr").textContent="اكتب شكوى أو سجّل ملاحظة صوتية أولًا";return}
+  if(!me.id){$("cpxErr").textContent="سجّل بياناتك أولًا";return}
+  $("cpxErr").textContent="";btn.disabled=true;
+  var fd=new FormData();
+  if(msg)fd.append("message",msg);
+  if(cpxBlob)fd.append("voice",cpxBlob,"complaint.webm");
+  fetch(API+"/complaints",{method:"POST",headers:TOK?{Authorization:"Bearer "+TOK}:{},body:fd}).then(function(r){return r.json()}).then(function(r){
+    btn.disabled=false;
+    if(r&&r.id){toast("تم إرسال شكواك، شكرًا لتواصلك");cpxBlob=null;draw()}
+    else{$("cpxErr").textContent=(r&&r.message)||"تعذّر إرسال الشكوى"}
+  }).catch(function(){btn.disabled=false;$("cpxErr").textContent="تعذّر الاتصال بالخادم"});
+}
+function complaintCard(){
+  return '<div class="card"><h2>📝 شكوى أو ملاحظة</h2><p class="mute">اكتب ملاحظتك أو سجّلها بصوتك، وهتوصل لنا فورًا.</p>'+
+    '<textarea id="cpxMsg" placeholder="اكتب شكواك هنا (اختياري لو هتسجّل صوت)" style="'+INP+';min-height:70px"></textarea>'+
+    '<div style="display:flex;gap:8px;align-items:center;margin-top:6px">'+
+    '<button class="chip" id="cpxRec">🎙️ تسجيل صوتي</button>'+
+    '<span class="mute" id="cpxRecStatus"></span></div>'+
+    '<audio id="cpxAudioPreview" controls style="width:100%;margin-top:6px;display:none"></audio>'+
+    '<button class="big" id="cpxSend" style="margin-top:8px">إرسال</button>'+
+    '<p id="cpxErr" style="color:var(--t)"></p></div>';
+}
 var DB={customers:[],orders:[]}; // simulated database tables
 var API=location.hostname.indexOf("railway.app")>-1?"":"https://fruit-app-production.up.railway.app";
 var TOK="",ROLE="";try{TOK=localStorage.getItem("sf_tok")||"";ROLE=localStorage.getItem("sf_role")||""}catch(x){}
 function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){logout();}return r.json()})}
 function dbSaveCustomer(c){}
+var _cartSyncT=null;
+function syncCart(){
+  if(!me.id)return;
+  clearTimeout(_cartSyncT);
+  _cartSyncT=setTimeout(function(){
+    apiCall("POST","/cart/sync",{items:cart}).catch(function(){});
+  },2000);
+}
 function dbSaveOrder(o,onOk,onFail){
   if(!me.id){if(onFail)onFail("سجّل بياناتك أولًا");return}
   apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
-    if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;if(onOk)onOk(r)}
+    if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;clearTimeout(_cartSyncT);apiCall("POST","/cart/sync",{items:{}}).catch(function(){});if(onOk)onOk(r)}
     else{if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
@@ -324,9 +380,9 @@ document.addEventListener("click",function(e){
   else if(d.c!==undefined){cat=d.c;window.scrollTo(0,0);draw()}
   else if(d.a){
     if(active()){toast("لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة");return}
-    cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw();
+    cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw();syncCart();
   }
-  else if(d.m){cart[d.m]--;if(!cart[d.m])delete cart[d.m];draw()}
+  else if(d.m){cart[d.m]--;if(!cart[d.m])delete cart[d.m];draw();syncCart()}
   else if(d.k){var o=orders[d.i];
     if(d.k==="pay"){o.pay="paid";toast("تم تأكيد الدفع")}else if(d.k==="start")o.st=1;else if(d.k==="ready"){o.ready=true;toast("الطلب جاهز للتوصيل")}
     else if(d.k==="go"){o.st=2;toast("تم إبلاغ العميل أنك في الطريق")}
@@ -383,6 +439,8 @@ document.addEventListener("click",function(e){
     if(!n1||p1.replace(/\D/g,"").length<10||!a1){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
     me={name:n1,phone:p1,addr:a1};editing=false;saveMe();dbSaveCustomer(me);hello();toast("تم التسجيل، أهلاً "+n1);go("shop")}
   else if(t.id==="editme"){editing=true;draw()}
+  else if(t.id==="cpxRec"){toggleComplaintRec(t)}
+  else if(t.id==="cpxSend"){sendComplaint(t)}
   else if(t.id==="copy"){try{navigator.clipboard.writeText($("rc").textContent)}catch(x){}toast("تم نسخ الكود")}
   else if(t.id==="sim"){if(friends<CAP){friends++;toast("تمت إضافة "+money(REWARD)+" إلى رصيدك");draw()}}
 });

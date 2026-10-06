@@ -99,6 +99,7 @@ html[data-boot="app"] #app{display:block!important}
 <section id="stock"></section>
 <section id="lowstock"></section>
 <section id="shortages"></section>
+<section id="complaints"></section>
 <section id="team"></section>
 
 </div>
@@ -134,7 +135,7 @@ var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -153,6 +154,7 @@ function go(t){
   if(t==="stock")stockLoad();
   if(t==="lowstock"){LOWSTK=null;lowStockShell()}
   if(t==="shortages"){SHORT=null;shortagesShell()}
+  if(t==="complaints"){COMPL=null;complaintsShell()}
 }
 
 /* ---------- team (admin) ---------- */
@@ -257,6 +259,26 @@ function shortagesBlock(){
   if(SHORT===null)return'';
   if(!SHORT.length)return '<div class="card"><p class="mute">لا توجد محاولات شراء فاشلة بسبب نقص المخزون حتى الآن 🎉</p></div>';
   return SHORT.map(function(x){return '<div class="card"><b>'+esc(x.customer_name)+'</b> · '+esc(x.customer_phone)+'<br>حاول طلب '+(x.emoji||"")+' '+esc(x.product_name)+' × '+x.requested_qty+' '+esc(x.unit)+' — المتاح وقتها كان '+x.available_qty+' '+esc(x.unit)+'<br><span class="mute">'+dt(x.created_at)+'</span></div>'}).join('');
+}
+/* ---------- complaints (admin only) ---------- */
+var COMPL=null;
+function complaintsShell(){
+  $("complaints").innerHTML='<h1 style="font-size:19px">📝 شكاوى وملاحظات العملاء</h1>'+
+    '<div class="card"><button class="big" id="complGo">🔍 استعلم الآن</button></div>'+
+    complaintsBlock();
+}
+function complaintsQuery(){
+  apiCall("GET","/complaints").then(function(r){COMPL=Array.isArray(r)?r:[];complaintsShell()}).catch(function(){COMPL=[];complaintsShell()});
+}
+function complaintsBlock(){
+  if(COMPL===null)return'';
+  if(!COMPL.length)return '<div class="card"><p class="mute">لا توجد شكاوى أو ملاحظات حتى الآن.</p></div>';
+  return COMPL.map(function(x){
+    return '<div class="card"><b>'+esc(x.customer_name)+'</b> · '+esc(x.customer_phone)+
+      (x.message?'<p style="margin:6px 0">'+esc(x.message)+'</p>':'')+
+      (x.voice_url?'<audio controls src="'+API+x.voice_url+'" style="width:100%;margin:6px 0"></audio>':'')+
+      '<span class="mute">'+dt(x.created_at)+'</span></div>';
+  }).join('');
 }
 function stockV(){
   var el=$("stock");if(!el)return;
@@ -385,6 +407,33 @@ function startApp(){
   buildNav();
   var first=(NAV[ROLE]||[["store"]])[0][0];
   go(first);
+  if(ROLE==="admin")setupPush();
+}
+
+/* ---------- push notifications (admin only) ---------- */
+function b64ToUint8(b64){
+  var pad="=".repeat((4-b64.length%4)%4);
+  var base64=(b64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  var raw=atob(base64),out=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+  return out;
+}
+function setupPush(){
+  if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
+  navigator.serviceWorker.ready.then(function(reg){
+    return reg.pushManager.getSubscription().then(function(sub){
+      if(sub)return sub;
+      if(Notification.permission==="denied")return null;
+      return Notification.requestPermission().then(function(perm){
+        if(perm!=="granted")return null;
+        return apiCall("GET","/push/vapid-public-key").then(function(r){
+          return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToUint8(r.key)});
+        });
+      });
+    });
+  }).then(function(sub){
+    if(sub)apiCall("POST","/push/subscribe",{subscription:sub.toJSON?sub.toJSON():sub}).catch(function(){});
+  }).catch(function(){});
 }
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
@@ -527,6 +576,7 @@ if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catc
   if(t.id==="storeGo"){ordQuery("store");return}
   if(t.id==="driverGo"){ordQuery("driver");return}
   if(t.id==="shortGo"){shortagesQuery();return}
+  if(t.id==="complGo"){complaintsQuery();return}
 });
 
 startApp();

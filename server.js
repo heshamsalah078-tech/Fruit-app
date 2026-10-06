@@ -5,6 +5,10 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const webpush = require('web-push');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -12,6 +16,44 @@ app.use(express.json());
 ['manifest.json','staff-manifest.json','sw.js','install-sw.js','icon-192.png','icon-512.png'].forEach(function(f){
   app.get('/'+f, function(req,res){res.sendFile(require('path').join(__dirname,f))});
 });
+
+// ---- PUSH NOTIFICATIONS (web-push) ----
+// Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Railway's Variables for production.
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BAwDYPNkTZd0eDBBXVYnrmD83iSv3YPxIvz43X4PHfBbitsjIni24aZo8asrKZchcqgippLL-XGOJwHK84NyOZE';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'vkaRyGbO8EoUE_qjAhdFpf69K_BhdWqhNpoH_jy86Og';
+webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+
+// Send a push notification to every admin device subscribed. Removes subscriptions that are no longer valid.
+async function notifyAdmins(payload) {
+  const subs = await pool.query(
+    `SELECT ps.* FROM push_subscriptions ps JOIN staff s ON s.id = ps.staff_id WHERE s.role = 'admin'`
+  );
+  const body = JSON.stringify(payload);
+  for (const sub of subs.rows) {
+    const pushSub = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
+    try {
+      await webpush.sendNotification(pushSub, body);
+    } catch (e) {
+      if (e.statusCode === 404 || e.statusCode === 410) {
+        await pool.query('DELETE FROM push_subscriptions WHERE id=$1', [sub.id]);
+      } else {
+        console.error('push failed', e.message);
+      }
+    }
+  }
+}
+
+// Voice-note uploads for complaints, stored on local disk under /uploads (served statically below).
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1e9) + '.webm')
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 // Express treats /x and /x/ as the same route, so check the real URL to avoid a redirect loop
 function pageRoute(base, file) {
@@ -57,6 +99,32 @@ function requireAuth(...roles) {
     }
   };
 }
+
+// ---- PUSH SUBSCRIPTIONS ----
+app.get('/push/vapid-public-key', (req, res) => {
+  res.json({ key: VAPID_PUBLIC_KEY });
+});
+
+// Admin device registers itself to receive push notifications.
+app.post('/push/subscribe', requireAuth('admin'), async (req, res) => {
+  const { endpoint, keys } = req.body.subscription || req.body;
+  if (!endpoint || !keys || !keys.p256dh || !keys.auth) {
+    return res.status(400).json({ error: 'invalid_subscription' });
+  }
+  await pool.query(
+    `INSERT INTO push_subscriptions (staff_id, endpoint, p256dh, auth)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (endpoint) DO UPDATE SET staff_id=$1, p256dh=$3, auth=$4`,
+    [req.user.id, endpoint, keys.p256dh, keys.auth]
+  );
+  res.json({ ok: true });
+});
+
+app.post('/push/unsubscribe', requireAuth('admin'), async (req, res) => {
+  const { endpoint } = req.body;
+  if (endpoint) await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1', [endpoint]);
+  res.json({ ok: true });
+});
 
 // ---- CATEGORIES ----
 app.get('/categories', async (req, res) => {
@@ -253,8 +321,8 @@ app.get('/customers', requireAuth('admin'), async (req, res) => {
 // type: 'purchase' | 'sale' | 'return' | 'waste' | 'cancel_restock'. quantity is always positive.
 async function moveStock(client, { product_id, type, quantity, note, order_id, staff_id }) {
   const sign = (type === 'purchase' || type === 'return' || type === 'cancel_restock') ? 1 : -1;
-  await client.query(
-    'UPDATE products SET stock_qty = stock_qty + $1 WHERE id = $2',
+  const upd = await client.query(
+    'UPDATE products SET stock_qty = stock_qty + $1 WHERE id = $2 RETURNING stock_qty, low_stock_threshold, name, emoji, unit',
     [sign * quantity, product_id]
   );
   await client.query(
@@ -262,6 +330,30 @@ async function moveStock(client, { product_id, type, quantity, note, order_id, s
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [product_id, type, quantity, note || null, order_id || null, staff_id || null]
   );
+  // If this movement just brought the product down to/below its critical threshold, notify admins —
+  // but only once per "episode" (we won't notify again until it goes back above threshold and dips again).
+  const p = upd.rows[0];
+  if (p && p.low_stock_threshold > 0 && Number(p.stock_qty) <= Number(p.low_stock_threshold)) {
+    checkLowStockNotify(p, product_id).catch(function (e) { console.error('low stock notify failed', e.message); });
+  } else if (p && Number(p.stock_qty) > Number(p.low_stock_threshold)) {
+    // Back above threshold — clear the flag so a future dip notifies again.
+    await client.query('DELETE FROM notified_low_stock WHERE product_id=$1', [product_id]);
+  }
+}
+
+async function checkLowStockNotify(p, product_id) {
+  const already = await pool.query('SELECT 1 FROM notified_low_stock WHERE product_id=$1', [product_id]);
+  if (already.rows.length) return;
+  await pool.query(
+    'INSERT INTO notified_low_stock (product_id, notified_at) VALUES ($1, now()) ON CONFLICT (product_id) DO UPDATE SET notified_at=now()',
+    [product_id]
+  );
+  await notifyAdmins({
+    title: '📉 مخزون منخفض',
+    body: (p.emoji || '') + ' ' + p.name + ': تبقّى ' + p.stock_qty + ' ' + p.unit + ' فقط (الحد الحرج ' + p.low_stock_threshold + ').',
+    tag: 'lowstock',
+    url: '/staff/#lowstock'
+  });
 }
 
 // Admin: full stock dashboard — current quantities + movement history
@@ -326,14 +418,28 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
            WHERE customer_id=$1 AND product_id=$2 AND created_at > now() - interval '2 minutes'`,
           [customer_id, it.product_id]
         );
+        let justLogged = false;
         if (!recent.rows.length) {
           await client.query(
             `INSERT INTO stock_shortage_log (customer_id, product_id, requested_qty, available_qty)
              VALUES ($1,$2,$3,$4)`,
             [customer_id, it.product_id, it.quantity, availableQty]
           );
+          justLogged = true;
         }
         await client.query('COMMIT');
+        if (justLogged) {
+          // Fire-and-forget: tell the admin a customer just hit a stock wall, with full detail.
+          pool.query('SELECT name, phone FROM customers WHERE id=$1', [customer_id]).then(function (cr) {
+            const custName = cr.rows[0] ? cr.rows[0].name : 'عميل';
+            notifyAdmins({
+              title: '⚠️ محاولة شراء فاشلة',
+              body: custName + ' حاول يطلب ' + it.quantity + ' من "' + productName + '" والمتاح ' + availableQty + ' فقط.',
+              tag: 'shortage',
+              url: '/staff/#shortages'
+            }).catch(function (e) { console.error('notify shortage failed', e.message); });
+          }).catch(function (e) { console.error('notify shortage lookup failed', e.message); });
+        }
         return res.status(409).json({
           error: 'insufficient_stock',
           message: 'عذرًا، الكمية المتاحة من "' + productName + '" لا تكفي.'
@@ -560,6 +666,172 @@ app.patch('/payments/:orderId/verify', requireAuth('admin'), async (req, res) =>
   );
   res.json(r.rows[0]);
 });
+
+// ---- CART TRACKING (abandoned cart detection) ----
+// Customer app pings this (debounced) whenever the cart changes. We just remember the
+// latest snapshot and when it last changed; a background job looks for stale non-empty carts.
+app.post('/cart/sync', requireAuth('customer'), async (req, res) => {
+  const { items } = req.body; // { productId: qty, ... }
+  const hasItems = items && Object.keys(items).length > 0;
+  if (!hasItems) {
+    // Cart emptied or order placed — clear any pending snapshot so we don't notify about it later.
+    await pool.query('DELETE FROM cart_snapshots WHERE customer_id=$1', [req.user.id]);
+    return res.json({ ok: true });
+  }
+  await pool.query(
+    `INSERT INTO cart_snapshots (customer_id, items, updated_at, notified_at)
+     VALUES ($1,$2, now(), NULL)
+     ON CONFLICT (customer_id) DO UPDATE SET items=$2, updated_at=now(), notified_at=NULL`,
+    [req.user.id, JSON.stringify(items)]
+  );
+  res.json({ ok: true });
+});
+
+// ---- COMPLAINTS ----
+// Customer submits a written and/or voice complaint; admin is notified immediately.
+app.post('/complaints', requireAuth('customer'), upload.single('voice'), async (req, res) => {
+  const { message } = req.body;
+  const voiceUrl = req.file ? '/uploads/' + req.file.filename : null;
+  if (!message && !voiceUrl) {
+    return res.status(400).json({ error: 'empty', message: 'اكتب شكواك أو سجّلها صوتيًا.' });
+  }
+  const r = await pool.query(
+    `INSERT INTO complaints (customer_id, message, voice_url) VALUES ($1,$2,$3) RETURNING *`,
+    [req.user.id, message || null, voiceUrl]
+  );
+  const cust = await pool.query('SELECT name FROM customers WHERE id=$1', [req.user.id]);
+  const custName = cust.rows[0] ? cust.rows[0].name : 'عميل';
+  notifyAdmins({
+    title: '📝 شكوى جديدة من ' + custName,
+    body: message ? message.slice(0, 120) : 'تم إرسال ملاحظة صوتية.',
+    tag: 'complaint',
+    url: '/staff/#complaints'
+  }).catch(function (e) { console.error('notify complaint failed', e.message); });
+  res.json(r.rows[0]);
+});
+
+// Admin-only: browse complaints, newest first.
+app.get('/complaints', requireAuth('admin'), async (req, res) => {
+  const r = await pool.query(
+    `SELECT cm.*, c.name AS customer_name, c.phone AS customer_phone
+     FROM complaints cm JOIN customers c ON c.id = cm.customer_id
+     ORDER BY cm.created_at DESC LIMIT 200`
+  );
+  res.json(r.rows);
+});
+
+// ---- BACKGROUND: delayed-order watcher ----
+// Every 3 minutes, check for orders delayed more than 30 minutes that we haven't already
+// notified about, and push one notification per newly-delayed order found.
+async function checkDelayedOrders() {
+  try {
+    const r = await pool.query(
+      `SELECT o.id, c.name AS customer_name
+       FROM orders o
+       JOIN customers c ON c.id = o.customer_id
+       LEFT JOIN notified_delayed_orders n ON n.order_id = o.id
+       WHERE o.status NOT IN ('delivered','cancelled')
+         AND o.created_at < now() - interval '30 minutes'
+         AND n.order_id IS NULL`
+    );
+    for (const row of r.rows) {
+      await pool.query('INSERT INTO notified_delayed_orders (order_id) VALUES ($1) ON CONFLICT DO NOTHING', [row.id]);
+      await notifyAdmins({
+        title: '⏰ طلب متأخر',
+        body: 'طلب ' + row.customer_name + ' اتأخر أكتر من 30 دقيقة ولسه ما اتسلّمش.',
+        tag: 'delayed-' + row.id,
+        url: '/staff/#delayed'
+      });
+    }
+  } catch (e) {
+    console.error('checkDelayedOrders failed', e.message);
+  }
+}
+setInterval(checkDelayedOrders, 3 * 60 * 1000);
+checkDelayedOrders();
+
+// ---- BACKGROUND: abandoned-cart watcher ----
+// Every 5 minutes, find carts that haven't changed in 20+ minutes and haven't been
+// cleared (meaning no order followed), and notify once per abandonment.
+async function checkAbandonedCarts() {
+  try {
+    const r = await pool.query(
+      `SELECT cs.customer_id, cs.items, c.name, c.phone
+       FROM cart_snapshots cs
+       JOIN customers c ON c.id = cs.customer_id
+       WHERE cs.updated_at < now() - interval '20 minutes'
+         AND cs.notified_at IS NULL`
+    );
+    for (const row of r.rows) {
+      const items = row.items || {};
+      const ids = Object.keys(items);
+      let itemsDesc = '';
+      if (ids.length) {
+        const prods = await pool.query('SELECT id, name, emoji FROM products WHERE id = ANY($1::int[])', [ids.map(Number)]);
+        itemsDesc = prods.rows.map(p => (p.emoji || '') + ' ' + p.name + ' ×' + items[p.id]).join('، ');
+      }
+      await pool.query('UPDATE cart_snapshots SET notified_at = now() WHERE customer_id=$1', [row.customer_id]);
+      await notifyAdmins({
+        title: '🛒 سلة متروكة',
+        body: row.name + ' أضاف منتجات ولم يكمل الطلب: ' + (itemsDesc || 'منتجات في السلة') + '.',
+        tag: 'abandoned-cart-' + row.customer_id,
+        url: '/staff'
+      });
+    }
+  } catch (e) {
+    console.error('checkAbandonedCarts failed', e.message);
+  }
+}
+setInterval(checkAbandonedCarts, 5 * 60 * 1000);
+checkAbandonedCarts();
+
+// ---- BACKGROUND: inactive-customer watcher ----
+// Every 6 hours, look at customers with at least 3 past orders, compute the average gap
+// between their orders, and flag anyone silent for more than 2x their own average gap
+// since their last order (never notified twice for the same silence).
+async function checkInactiveCustomers() {
+  try {
+    const r = await pool.query(`
+      WITH gaps AS (
+        SELECT customer_id,
+               created_at,
+               created_at - LAG(created_at) OVER (PARTITION BY customer_id ORDER BY created_at) AS gap
+        FROM orders
+        WHERE status <> 'cancelled'
+      ),
+      stats AS (
+        SELECT customer_id, AVG(gap) AS avg_gap, MAX(created_at) AS last_order, COUNT(*) AS n
+        FROM gaps
+        GROUP BY customer_id
+        HAVING COUNT(*) >= 2
+      )
+      SELECT s.customer_id, c.name, c.phone, s.avg_gap, s.last_order
+      FROM stats s
+      JOIN customers c ON c.id = s.customer_id
+      LEFT JOIN notified_inactive_customers n ON n.customer_id = s.customer_id
+      WHERE now() - s.last_order > s.avg_gap * 2
+        AND (n.notified_at IS NULL OR n.notified_at < s.last_order)
+    `);
+    for (const row of r.rows) {
+      await pool.query(
+        `INSERT INTO notified_inactive_customers (customer_id, notified_at) VALUES ($1, now())
+         ON CONFLICT (customer_id) DO UPDATE SET notified_at = now()`,
+        [row.customer_id]
+      );
+      const days = Math.round((Date.now() - new Date(row.last_order).getTime()) / 86400000);
+      await notifyAdmins({
+        title: '👋 عميل غاب عن عادته',
+        body: row.name + ' لم يطلب منذ ' + days + ' يومًا، وده أكتر من ضعف معدله المعتاد.',
+        tag: 'inactive-' + row.customer_id,
+        url: '/staff'
+      });
+    }
+  } catch (e) {
+    console.error('checkInactiveCustomers failed', e.message);
+  }
+}
+setInterval(checkInactiveCustomers, 6 * 60 * 60 * 1000);
+checkInactiveCustomers();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('API running on port ' + PORT));
