@@ -107,21 +107,32 @@ app.get('/products', async (req, res) => {
 });
 
 app.post('/products', requireAuth('admin'), async (req, res) => {
-  const { name, emoji, image_url, price, unit, category, stock_qty } = req.body;
+  const { name, emoji, image_url, price, unit, category, stock_qty, low_stock_threshold } = req.body;
   const r = await pool.query(
-    'INSERT INTO products (name, emoji, image_url, price, unit, category, stock_qty) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [name, emoji, image_url, price, unit, category, stock_qty || 0]
+    'INSERT INTO products (name, emoji, image_url, price, unit, category, stock_qty, low_stock_threshold) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+    [name, emoji, image_url, price, unit, category, stock_qty || 0, low_stock_threshold || 0]
   );
   res.json(r.rows[0]);
 });
 
 app.put('/products/:id', requireAuth('admin'), async (req, res) => {
-  const { name, price, unit, category, image_url, emoji } = req.body;
+  const { name, price, unit, category, image_url, emoji, low_stock_threshold } = req.body;
   const r = await pool.query(
-    'UPDATE products SET name=$1, price=$2, unit=$3, category=$4, image_url=$5, emoji=$6 WHERE id=$7 RETURNING *',
-    [name, price, unit, category, image_url, emoji, req.params.id]
+    'UPDATE products SET name=$1, price=$2, unit=$3, category=$4, image_url=$5, emoji=$6, low_stock_threshold=$7 WHERE id=$8 RETURNING *',
+    [name, price, unit, category, image_url, emoji, low_stock_threshold || 0, req.params.id]
   );
   res.json(r.rows[0]);
+});
+
+// Admin-only: products at or below their own low_stock_threshold, queried on demand.
+app.get('/stock/low', requireAuth('admin'), async (req, res) => {
+  const r = await pool.query(
+    `SELECT id, name, emoji, unit, stock_qty, low_stock_threshold
+     FROM products
+     WHERE low_stock_threshold > 0 AND stock_qty <= low_stock_threshold
+     ORDER BY stock_qty ASC`
+  );
+  res.json(r.rows);
 });
 
 app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
@@ -385,15 +396,30 @@ app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, 
   res.json(await withItems(r.rows));
 });
 
-// Admin-only: orders confirmed more than 30 minutes ago that are still not delivered.
+// Admin-only: orders delayed more than 30 minutes, queried on demand.
+// ?delivered=1 -> delayed orders that WERE eventually delivered (delivered_at - created_at > 30 min)
+// ?delivered=0 (default) -> still-open orders delayed more than 30 min since creation
 app.get('/orders/delayed', requireAuth('admin'), async (req, res) => {
-  const r = await pool.query(
-    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
-     FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status NOT IN ('delivered','cancelled')
-       AND o.created_at < now() - interval '30 minutes'
-     ORDER BY o.created_at`
-  );
+  const wantDelivered = req.query.delivered === '1' || req.query.delivered === 'true';
+  let r;
+  if (wantDelivered) {
+    r = await pool.query(
+      `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
+       FROM orders o JOIN customers c ON c.id = o.customer_id
+       WHERE o.status = 'delivered'
+         AND o.delivered_at IS NOT NULL
+         AND o.delivered_at - o.created_at > interval '30 minutes'
+       ORDER BY o.created_at DESC`
+    );
+  } else {
+    r = await pool.query(
+      `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
+       FROM orders o JOIN customers c ON c.id = o.customer_id
+       WHERE o.status NOT IN ('delivered','cancelled')
+         AND o.created_at < now() - interval '30 minutes'
+       ORDER BY o.created_at`
+    );
+  }
   res.json(await withItems(r.rows));
 });
 
