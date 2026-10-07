@@ -110,6 +110,7 @@ html[data-boot="app"] #app{display:block!important}
 <script>
 function $(id){return document.getElementById(id)}
 var API="https://fruit-app-production.up.railway.app";
+var swReady=("serviceWorker" in navigator)?navigator.serviceWorker.register("/sw.js").catch(function(e){console.error("sw register failed",e);return null}):Promise.resolve(null);
 // Session is kept in memory only (not localStorage) so the app always asks to log in again each time it is opened.
 var TOK="",ROLE="",MYID=0,MYNAME="";
 
@@ -419,21 +420,22 @@ function b64ToUint8(b64){
   return out;
 }
 function setupPush(){
-  if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
-  navigator.serviceWorker.ready.then(function(reg){
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)){console.warn("push not supported on this browser");return}
+  swReady.then(function(reg){
+    if(!reg){console.warn("service worker not registered, cannot set up push");return null}
     return reg.pushManager.getSubscription().then(function(sub){
       if(sub)return sub;
-      if(Notification.permission==="denied")return null;
+      if(Notification.permission==="denied"){console.warn("notification permission previously denied");return null}
       return Notification.requestPermission().then(function(perm){
-        if(perm!=="granted")return null;
+        if(perm!=="granted"){console.warn("notification permission not granted:",perm);return null}
         return apiCall("GET","/push/vapid-public-key").then(function(r){
           return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToUint8(r.key)});
         });
       });
     });
   }).then(function(sub){
-    if(sub)apiCall("POST","/push/subscribe",{subscription:sub.toJSON?sub.toJSON():sub}).catch(function(){});
-  }).catch(function(){});
+    if(sub)apiCall("POST","/push/subscribe",{subscription:sub.toJSON?sub.toJSON():sub}).catch(function(e){console.error("push subscribe api call failed",e)});
+  }).catch(function(e){console.error("setupPush failed",e)});
 }
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
@@ -448,7 +450,6 @@ document.addEventListener("click",function(e){
       if(r.token){
         TOK=r.token;ROLE=r.staff.role;MYID=r.staff.id;MYNAME=r.staff.name;
         startApp();
-if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 
 (function(){
   var deferredPrompt=null;
