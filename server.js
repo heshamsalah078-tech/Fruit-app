@@ -192,6 +192,20 @@ app.put('/products/:id', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Admin: quick-update just a product's low-stock threshold (used from the stock screen).
+app.put('/products/:id/threshold', requireAuth('admin'), async (req, res) => {
+  const { low_stock_threshold } = req.body;
+  if (low_stock_threshold === undefined || Number(low_stock_threshold) < 0) {
+    return res.status(400).json({ error: 'invalid', message: 'قيمة غير صحيحة.' });
+  }
+  const r = await pool.query(
+    'UPDATE products SET low_stock_threshold=$1 WHERE id=$2 RETURNING id, name, low_stock_threshold',
+    [Number(low_stock_threshold), req.params.id]
+  );
+  if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+  res.json(r.rows[0]);
+});
+
 // Admin-only: products at or below their own low_stock_threshold, queried on demand.
 app.get('/stock/low', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
@@ -358,7 +372,7 @@ async function checkLowStockNotify(p, product_id) {
 
 // Admin: full stock dashboard — current quantities + movement history
 app.get('/stock', requireAuth('admin'), async (req, res) => {
-  const products = await pool.query('SELECT id, name, emoji, unit, stock_qty FROM products ORDER BY id');
+  const products = await pool.query('SELECT id, name, emoji, unit, stock_qty, low_stock_threshold FROM products ORDER BY id');
   const moves = await pool.query(
     `SELECT m.*, p.name AS product_name, p.emoji, p.unit, s.name AS staff_name
      FROM stock_movements m
