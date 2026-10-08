@@ -252,7 +252,7 @@ function dbSaveOrder(o,onOk,onFail){
   if(!me.id){if(onFail)onFail("سجّل بياناتك أولًا");return}
   apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
     if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;clearTimeout(_cartSyncT);apiCall("POST","/cart/sync",{items:{}}).catch(function(){});if(onOk)onOk(r)}
-    else{if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
+    else{loadProducts();if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
 function refreshMyOrders(){
@@ -273,7 +273,11 @@ function refreshMyOrders(){
   }).catch(function(){});
 }
 setInterval(function(){if(TOK&&ROLE==="customer")refreshMyOrders()},12000);
-fetch(API+"/products").then(function(r){return r.json()}).then(function(a){if(a&&a.length){P=a.map(function(x){return {id:x.id,n:x.name,e:x.emoji,img:x.image_url||"",p:Number(x.price),u:x.unit,c:x.category}});nextPid=pMax()+1;draw()}}).catch(function(){});
+function loadProducts(){
+  fetch(API+"/products").then(function(r){return r.json()}).then(function(a){if(a&&a.length){P=a.map(function(x){return {id:x.id,n:x.name,e:x.emoji,img:x.image_url||"",p:Number(x.price),u:x.unit,c:x.category,avail:Number(x.available_qty)}});nextPid=pMax()+1;draw()}}).catch(function(){});
+}
+loadProducts();
+setInterval(loadProducts,30000);
 var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[],friends=2,used=0;
 fetch(API+"/categories").then(function(r){return r.json()}).then(function(a){if(a&&a.length){CATMETA=a;CATS=["الكل"].concat(a.map(function(c){return c.name}));draw()}}).catch(function(){});
 var STATUS_SEQ=["awaiting_prep","preparing","awaiting_delivery","on_the_way","delivered"];
@@ -304,7 +308,9 @@ function shop(){
   var list=P.filter(function(p){return p.c===cat});
   var lock=active();
   $("grid").innerHTML=(lock?'<p class="mute" style="grid-column:1/-1;margin:0 0 4px">لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة.</p>':'')+(list.length?list.map(function(p){
-    return '<div class="p"><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'"'+(lock?' style="opacity:.4"':'')+'>+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>للـ'+p.u+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>');
+    var out=(p.avail!==undefined&&p.avail<=0);
+    var dis=lock||out;
+    return '<div class="p"'+(out?' style="opacity:.55"':'')+'><div class="ph">'+(p.img?'<img src="'+p.img+'" alt="'+p.e+'" loading="lazy" onerror="this.outerHTML=this.alt" style="width:100%;height:100%;object-fit:cover">':p.e)+'<button class="add" aria-label="أضف '+p.n+'" data-a="'+p.id+'"'+(dis?' style="opacity:.4"':'')+'>+</button></div><div class="pb"><span class="price">'+money(p.p)+'</span><b>'+p.n+'</b><small>'+(out?'نفدت الكمية':'للـ'+p.u)+'</small></div></div>'}).join(""):'<div class="empty" style="grid-column:1/-1">لا توجد منتجات في هذا القسم بعد.</div>');
 }
 function sub(){return P.reduce(function(s,p){return s+(cart[p.id]||0)*p.p},0)}
 function count(){return Object.values(cart).reduce(function(a,b){return a+b},0)}
@@ -313,7 +319,7 @@ function cartV(){
   if(!ids.length){$("cart").innerHTML='<div class="empty"><div style="font-size:56px">🧺</div>سلتك فارغة.<br>أضف منتجات من المتجر لتبدأ.</div>';return}
   var s=sub(),d=Math.min(bal(),s),tot=s+FEE-d;
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
-  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>رصيد المكافآت</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':'<div class="card" style="margin-top:8px"><p class="mute">سجّل بياناتك أولًا لإتمام الطلب.</p><button class="chip" data-t="acct">تسجيل بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
+  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>رصيد المكافآت</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
 }
 function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
 function timesFor(o){
@@ -380,6 +386,8 @@ document.addEventListener("click",function(e){
   else if(d.c!==undefined){cat=d.c;window.scrollTo(0,0);draw()}
   else if(d.a){
     if(active()){toast("لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة");return}
+    var prod=P.find(function(p){return p.id==d.a});
+    if(prod&&prod.avail!==undefined&&prod.avail<=(cart[d.a]||0)){toast("عذرًا، نفدت الكمية المتاحة من هذا المنتج");return}
     cart[d.a]=(cart[d.a]||0)+1;if(t.classList.contains("add"))toast("تمت الإضافة إلى السلة");draw();syncCart();
   }
   else if(d.m){cart[d.m]--;if(!cart[d.m])delete cart[d.m];draw();syncCart()}
@@ -405,7 +413,7 @@ document.addEventListener("click",function(e){
       draw()
     }).catch(function(){payErr="تعذّر الاتصال بالخادم";draw()})}
   else if(t.id==="order"){
-    if(!me.phone){toast("سجّل بياناتك أولًا");go("acct");return}
+    if(!me.phone){toast("أكمل بياناتك فوق أولًا لإتمام الطلب");var ckn=$("ckName");if(ckn)ckn.focus();return}
     var nm=me.name,ph=me.phone,ad=me.addr;
     dbSaveCustomer(me);
     var s=sub(),dd=Math.min(bal(),s);used+=dd;
@@ -437,8 +445,16 @@ document.addEventListener("click",function(e){
   else if(t.id==="reg"){
     var n1=$("rName").value.trim(),p1=$("rPhone").value.trim(),a1=$("rAddr").value.trim();
     if(!n1||p1.replace(/\D/g,"").length<10||!a1){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
-    me={name:n1,phone:p1,addr:a1};editing=false;saveMe();dbSaveCustomer(me);hello();toast("تم التسجيل، أهلاً "+n1);go("shop")}
+    t.disabled=true;
+    identifyCustomer(n1,p1,a1,function(){t.disabled=false;editing=false;toast("تم الحفظ، أهلاً "+n1);go("shop")},function(msg){t.disabled=false;toast(msg)});
+  }
   else if(t.id==="editme"){editing=true;draw()}
+  else if(t.id==="ckReg"){
+    var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim();
+    if(!n2||p2.replace(/\D/g,"").length<10||!a2){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
+    t.disabled=true;
+    identifyCustomer(n2,p2,a2,function(){t.disabled=false;toast("تم حفظ بياناتك");draw()},function(msg){t.disabled=false;toast(msg)});
+  }
   else if(t.id==="cpxRec"){toggleComplaintRec(t)}
   else if(t.id==="cpxSend"){sendComplaint(t)}
   else if(t.id==="copy"){try{navigator.clipboard.writeText($("rc").textContent)}catch(x){}toast("تم نسخ الكود")}
@@ -446,38 +462,28 @@ document.addEventListener("click",function(e){
 });
 
 /* ===== AUTH ===== */
-var amode="login";
-var AROLES={customer:["acct","shop","cart","orders","ref"]};
-function authBox(){var el=$("auth");if(!el){el=document.createElement("div");el.id="auth";el.style.cssText="position:fixed;inset:0;z-index:99;background:var(--bg,#f6f8f4);overflow:auto;padding:24px 18px;direction:rtl";document.body.appendChild(el)}return el}
+// Customers browse and shop freely, no login wall. If some earlier session left a
+// full-screen auth overlay in the DOM, make sure it's hidden and stays out of the way.
 function authV(){
-  var el=authBox();if(TOK){el.style.display="none";return}el.style.display="block";
-  var tb=function(m,t){return '<button class="chip'+(amode===m?' on':'')+'" data-am="'+m+'" style="flex:1">'+t+'</button>'};
-  var f='<input id="aPhone" placeholder="رقم الموبايل" inputmode="tel" style="'+INP+'">'+'<input id="aPass" type="password" placeholder="كلمة السر" style="'+INP+'">';
-  if(amode==="signup")f='<input id="aName" placeholder="الاسم" style="'+INP+'">'+f+'<input id="aAddr" placeholder="عنوان التوصيل" style="'+INP+'">';
-  el.innerHTML='<h1 style="text-align:center;margin:10px 0">🥬 سوق الطازج</h1><div style="display:flex;gap:6px;margin:14px 0">'+tb("login","دخول")+tb("signup","حساب جديد")+'</div><div class="card">'+f+'<button class="big" id="aGo" style="width:100%;margin-top:10px">'+(amode==="signup"?"تسجيل":"دخول")+'</button><p id="aErr" style="color:#c0392b;margin:8px 0 0"></p></div>';
+  var el=$("auth");if(el)el.style.display="none";
 }
-function applyRole(){
-  var ok=AROLES[ROLE]||[];
-  document.querySelectorAll("nav button").forEach(function(b){b.style.display=ok.indexOf(b.dataset.t)>-1?"":"none"});
-  document.querySelectorAll("section").forEach(function(sx){if(ok.indexOf(sx.id)<0)sx.classList.remove("on")});
+function startApp(){authV();hello();draw();if(TOK)refreshMyOrders();go("shop")}
+function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}draw()}
+// Called once we have name+phone+address (collected inline at checkout or in the account tab).
+// No password: customers are identified purely by phone number.
+function identifyCustomer(name,phone,addr,onOk,onFail){
+  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr}).then(function(r){
+    if(r&&r.token){
+      TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address};
+      try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}
+      hello();if(onOk)onOk()
+    }else{if(onFail)onFail((r&&r.message)||"تعذّر حفظ بياناتك")}
+  }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
-function startApp(){if(TOK&&ROLE!=="customer"){logout();return}authV();if(!TOK)return;applyRole();hello();draw();refreshMyOrders();go((AROLES[ROLE]||["shop"])[ROLE==="customer"||ROLE==="admin"?1:0])}
-function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}authV()}
-function authDone(r,role){TOK=r.token;ROLE=role;var u=r.customer||r.staff;me={id:u.id,name:u.name,phone:u.phone||"",addr:u.address||""};try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}startApp()}
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
-  if(t.dataset.am){amode=t.dataset.am;authV();return}
-  if(t.id==="aGo"){
-    var ph=$("aPhone").value.trim(),pw=$("aPass").value,er=$("aErr");er.textContent="";
-    if(!ph||pw.length<6){er.textContent="أدخل رقم الموبايل وكلمة سر (6 أحرف على الأقل)";return}
-    var url="/auth/login",body={phone:ph,password:pw};
-    if(amode==="staff")url="/auth/staff-login";
-    if(amode==="signup"){var nm=$("aName").value.trim(),ad=$("aAddr").value.trim();if(!nm||!ad){er.textContent="أكمل كل البيانات";return}url="/auth/signup";body={name:nm,phone:ph,address:ad,password:pw}}
-    t.disabled=true;
-    apiCall("POST",url,body).then(function(r){t.disabled=false;if(r.token)authDone(r,amode==="staff"?r.staff.role:"customer");else er.textContent=r.message||"حدث خطأ، حاول مرة أخرى"}).catch(function(){t.disabled=false;er.textContent="تعذّر الاتصال بالخادم"})
-  }else if(t.id==="lo"){logout()}
+  if(t.id==="lo"){logout()}
 });
-var _draw=draw;draw=function(){_draw();var a=$("acct");if(TOK&&a&&!a.querySelector("#lo"))a.insertAdjacentHTML("beforeend",'<div style="padding:12px"><button class="chip" id="lo">🚪 تسجيل الخروج</button></div>')};
 startApp();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 

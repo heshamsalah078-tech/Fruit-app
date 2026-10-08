@@ -169,8 +169,13 @@ app.delete('/categories/:id', requireAuth('admin'), async (req, res) => {
 });
 
 // ---- PRODUCTS ----
+// available_qty is what customers can actually buy right now: physical stock minus
+// whatever is currently reserved by confirmed-but-not-yet-shipped orders.
 app.get('/products', async (req, res) => {
-  const r = await pool.query('SELECT * FROM products WHERE in_stock = true ORDER BY id');
+  const r = await pool.query(
+    `SELECT *, GREATEST(stock_qty - reserved_qty, 0) AS available_qty
+     FROM products WHERE in_stock = true ORDER BY id`
+  );
   res.json(r.rows);
 });
 
@@ -224,42 +229,33 @@ app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
 
 // ---- CUSTOMER ACCOUNTS (signup / login) ----
 
-app.post('/auth/signup', async (req, res) => {
-  const { name, phone, address, password } = req.body;
-  if (!name || !phone || !address || !password) {
-    return res.status(400).json({ error: 'missing_fields', message: 'من فضلك أكمل كل البيانات.' });
+// Customers never set a password — browsing is always open. This single endpoint is
+// called only at the moment of checkout (or editing profile): it finds the customer by
+// phone if they've ordered before, or creates a fresh record, and returns a token either
+// way so the rest of the API (orders, cart sync, complaints) keeps working unchanged.
+app.post('/auth/customer-identify', async (req, res) => {
+  const { name, phone, address } = req.body;
+  if (!name || !phone || !address) {
+    return res.status(400).json({ error: 'missing_fields', message: 'من فضلك أكمل الاسم ورقم الموبايل والعنوان.' });
   }
-  const existing = await pool.query('SELECT id FROM customers WHERE phone=$1', [phone]);
+  const existing = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
+  let customer;
   if (existing.rows.length) {
-    return res.status(409).json({ error: 'phone_taken', message: 'رقم الهاتف مسجل بالفعل، جرّب تسجيل الدخول.' });
+    const r = await pool.query(
+      'UPDATE customers SET name=$1, address=$2 WHERE phone=$3 RETURNING id, name, phone, address',
+      [name, address, phone]
+    );
+    customer = r.rows[0];
+  } else {
+    const r = await pool.query(
+      `INSERT INTO customers (name, phone, address, role)
+       VALUES ($1,$2,$3,'customer') RETURNING id, name, phone, address`,
+      [name, phone, address]
+    );
+    customer = r.rows[0];
   }
-  const hash = await bcrypt.hash(password, 10);
-  const r = await pool.query(
-    `INSERT INTO customers (name, phone, address, password_hash, role)
-     VALUES ($1,$2,$3,$4,'customer') RETURNING id, name, phone, address`,
-    [name, phone, address, hash]
-  );
-  const customer = r.rows[0];
   const token = makeToken({ id: customer.id, role: 'customer', name: customer.name });
   res.json({ token, customer });
-});
-
-app.post('/auth/login', async (req, res) => {
-  const { phone, password } = req.body;
-  const r = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
-  if (!r.rows.length || !r.rows[0].password_hash) {
-    return res.status(401).json({ error: 'invalid_credentials', message: 'رقم الهاتف أو كلمة السر غير صحيحة.' });
-  }
-  const ok = await bcrypt.compare(password, r.rows[0].password_hash);
-  if (!ok) {
-    return res.status(401).json({ error: 'invalid_credentials', message: 'رقم الهاتف أو كلمة السر غير صحيحة.' });
-  }
-  const customer = r.rows[0];
-  const token = makeToken({ id: customer.id, role: 'customer', name: customer.name });
-  res.json({
-    token,
-    customer: { id: customer.id, name: customer.name, phone: customer.phone, address: customer.address }
-  });
 });
 
 app.post('/auth/staff-login', async (req, res) => {
@@ -412,17 +408,21 @@ app.post('/stock/movement', requireAuth('admin'), async (req, res) => {
 
 // ---- ORDERS ----
 // Customer places an order: checks stock, creates order, decrements stock ('sale'), all atomically.
+// Placing an order RESERVES stock (reserved_qty goes up) but does NOT deduct it yet —
+// physical stock_qty only goes down once the order actually leaves for delivery
+// (status -> 'on_the_way'). This way a confirmed-but-not-yet-shipped order holds its
+// items without falsely showing the warehouse as emptier than it really is.
 app.post('/orders', requireAuth('customer'), async (req, res) => {
   const { customer_id, items, delivery_fee, reward_discount, total } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Lock and check stock for every item first
+    // Lock and check AVAILABLE stock (physical minus already-reserved) for every item first
     for (const it of items) {
-      const cur = await client.query('SELECT stock_qty, name FROM products WHERE id=$1 FOR UPDATE', [it.product_id]);
-      if (!cur.rows.length || Number(cur.rows[0].stock_qty) < Number(it.quantity)) {
-        const availableQty = cur.rows[0] ? cur.rows[0].stock_qty : 0;
+      const cur = await client.query('SELECT stock_qty, reserved_qty, name FROM products WHERE id=$1 FOR UPDATE', [it.product_id]);
+      const availableQty = cur.rows.length ? Math.max(Number(cur.rows[0].stock_qty) - Number(cur.rows[0].reserved_qty), 0) : 0;
+      if (!cur.rows.length || availableQty < Number(it.quantity)) {
         const productName = cur.rows[0] ? cur.rows[0].name : 'المنتج';
         // Log the failed attempt, but only once per customer+product within a short window —
         // if they keep tapping "add" without noticing the error, we don't want dozens of
@@ -473,7 +473,8 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
          VALUES ($1,$2,$3,$4,$5)`,
         [order.id, it.product_id, it.quantity, it.unit_price, it.quantity * it.unit_price]
       );
-      await moveStock(client, { product_id: it.product_id, type: 'sale', quantity: it.quantity, order_id: order.id });
+      // Reserve only — no stock_movements row yet, nothing has physically left the warehouse.
+      await client.query('UPDATE products SET reserved_qty = reserved_qty + $1 WHERE id=$2', [it.quantity, it.product_id]);
     }
     await client.query('COMMIT');
     res.json(order);
@@ -597,24 +598,51 @@ const STATUS_MOVES = {
 app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res) => {
   const { status } = req.body;
   const moves = STATUS_MOVES[req.user.role] || {};
-  const cur = await pool.query('SELECT status, delivery_staff_id FROM orders WHERE id=$1', [req.params.id]);
-  if (!cur.rows.length) return res.status(404).json({ error: 'not_found' });
-  const row = cur.rows[0];
-  if (moves[row.status] !== status || (status === 'delivered' && row.delivery_staff_id !== req.user.id)) {
-    return res.status(403).json({ error: 'not_allowed', message: 'لا يمكنك تنفيذ هذا التغيير على هذا الطلب.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query('SELECT status, delivery_staff_id FROM orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+    if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not_found' }); }
+    const row = cur.rows[0];
+    if (moves[row.status] !== status || (status === 'delivered' && row.delivery_staff_id !== req.user.id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'not_allowed', message: 'لا يمكنك تنفيذ هذا التغيير على هذا الطلب.' });
+    }
+    const params = [status, req.params.id, row.status];
+    let extra = '';
+    if (status === 'preparing') { extra = ', prep_started_at=now(), prep_staff_id=$4'; params.push(req.user.id); }
+    if (status === 'awaiting_delivery') extra = ', prepared_at=now()';
+    if (status === 'on_the_way') { extra = ', delivery_started_at=now(), delivery_staff_id=$4'; params.push(req.user.id); }
+    if (status === 'delivered') extra = ", delivered_at=now(), payment_status='paid'";
+    const r = await client.query(`UPDATE orders SET status=$1${extra} WHERE id=$2 AND status=$3 RETURNING *`, params);
+    if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'taken', message: 'الطلب اتغيّرت حالته، حدّث الشاشة.' }); }
+
+    // The moment the order actually leaves the warehouse, the hold becomes a real deduction:
+    // physical stock drops and the reservation is released, logged as a normal 'sale'.
+    if (status === 'on_the_way') {
+      const items = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id=$1', [req.params.id]);
+      for (const it of items.rows) {
+        await client.query('UPDATE products SET reserved_qty = GREATEST(reserved_qty - $1, 0) WHERE id=$2', [it.quantity, it.product_id]);
+        await moveStock(client, { product_id: it.product_id, type: 'sale', quantity: it.quantity, order_id: req.params.id });
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json(r.rows[0]);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
   }
-  const params = [status, req.params.id, row.status];
-  let extra = '';
-  if (status === 'preparing') { extra = ', prep_started_at=now(), prep_staff_id=$4'; params.push(req.user.id); }
-  if (status === 'awaiting_delivery') extra = ', prepared_at=now()';
-  if (status === 'on_the_way') { extra = ', delivery_started_at=now(), delivery_staff_id=$4'; params.push(req.user.id); }
-  if (status === 'delivered') extra = ", delivered_at=now(), payment_status='paid'";
-  const r = await pool.query(`UPDATE orders SET status=$1${extra} WHERE id=$2 AND status=$3 RETURNING *`, params);
-  if (!r.rows.length) return res.status(409).json({ error: 'taken', message: 'الطلب اتغيّرت حالته، حدّث الشاشة.' });
-  res.json(r.rows[0]);
 });
 
 // Cancel an order: only the owning customer or an admin, and stock is returned ('return')
+// Orders still awaiting_prep/preparing/awaiting_delivery only have a RESERVATION, since
+// stock only leaves the warehouse once status becomes on_the_way. So cancelling before
+// that point just releases the reservation (no stock_movements row — nothing physically
+// moved). Cancelling after dispatch (customer refused at the door) means stock really did
+// leave, so that case logs a proper 'cancel_restock' return movement, as before.
 app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -630,9 +658,16 @@ app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, re
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'not_allowed', message: 'لا يمكن إلغاء هذا الطلب.' });
     }
+    const dispatched = ['on_the_way'].includes(order.status);
     const items = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id=$1', [order.id]);
     for (const it of items.rows) {
-      await moveStock(client, { product_id: it.product_id, type: 'cancel_restock', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب قبل التسليم' });
+      if (dispatched) {
+        // Stock had already physically left — bring it back as a real return.
+        await moveStock(client, { product_id: it.product_id, type: 'cancel_restock', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب بعد خروجه للتوصيل' });
+      } else {
+        // Still just a reservation — release it, nothing to restock physically.
+        await client.query('UPDATE products SET reserved_qty = GREATEST(reserved_qty - $1, 0) WHERE id=$2', [it.quantity, it.product_id]);
+      }
     }
     const r = await client.query("UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *", [order.id]);
     await client.query('COMMIT');
