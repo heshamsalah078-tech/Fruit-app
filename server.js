@@ -103,6 +103,8 @@ function requireAuth(...roles) {
 // ---- REFERRAL / REWARDS v2 (see referral.js) ----
 const referral = require('./referral').init({ pool, requireAuth, jwt, JWT_SECRET, express });
 app.use(referral.router);
+const cashCustody = require('./cashCustody').init({ pool, requireAuth, express });
+app.use(cashCustody.router);
 
 // ---- PUSH SUBSCRIPTIONS ----
 app.get('/push/vapid-public-key', (req, res) => {
@@ -292,25 +294,36 @@ app.post('/auth/staff-login', async (req, res) => {
 });
 
 app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
-  const { name, phone, password, role, job_title } = req.body;
-  if (!['prep', 'delivery', 'admin'].includes(role) || !name || !phone || !password || password.length < 6) {
+  const { name, phone, password, role, job_title, settlement_mode } = req.body;
+  if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name || !phone || !password || password.length < 6) {
     return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
+  }
+  if (settlement_mode && !['per_order', 'daily', 'weekly'].includes(settlement_mode)) {
+    return res.status(400).json({ error: 'invalid_settlement_mode' });
   }
   const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
   if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
   const hash = await bcrypt.hash(password, 10);
   const r = await pool.query(
-    'INSERT INTO staff (name, phone, password_hash, role, job_title) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, phone, role, job_title',
-    [name, phone, hash, role, job_title || null]
+    `INSERT INTO staff (name, phone, password_hash, role, job_title, settlement_mode)
+     VALUES ($1,$2,$3,$4,$5,COALESCE($6,'per_order')) RETURNING id, name, phone, role, job_title, settlement_mode`,
+    [name, phone, hash, role, job_title || null, role === 'delivery' ? (settlement_mode || 'per_order') : null]
   );
   res.json(r.rows[0]);
 });
 
 app.patch('/staff/:id', requireAuth('admin'), async (req, res) => {
-  const { name, job_title, role, password } = req.body;
-  if (!['prep', 'delivery', 'admin'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
+  const { name, job_title, role, password, settlement_mode } = req.body;
+  if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
   if (Number(req.params.id) === req.user.id && role !== 'admin') return res.status(400).json({ error: 'self' });
-  await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3 WHERE id=$4', [name, job_title || null, role, req.params.id]);
+  if (settlement_mode && !['per_order', 'daily', 'weekly'].includes(settlement_mode)) {
+    return res.status(400).json({ error: 'invalid_settlement_mode' });
+  }
+  if (role === 'delivery' && settlement_mode) {
+    await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3, settlement_mode=$4 WHERE id=$5', [name, job_title || null, role, settlement_mode, req.params.id]);
+  } else {
+    await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3 WHERE id=$4', [name, job_title || null, role, req.params.id]);
+  }
   if (password) {
     if (password.length < 6) return res.status(400).json({ error: 'short_password' });
     await pool.query('UPDATE staff SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(password, 10), req.params.id]);
@@ -328,7 +341,7 @@ app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
 });
 
 app.get('/staff-list', requireAuth('admin'), async (req, res) => {
-  const r = await pool.query('SELECT id, name, phone, role, job_title, active FROM staff ORDER BY id');
+  const r = await pool.query('SELECT id, name, phone, role, job_title, active, settlement_mode FROM staff ORDER BY id');
   res.json(r.rows);
 });
 app.patch('/staff/:id/active', requireAuth('admin'), async (req, res) => {
@@ -623,6 +636,18 @@ const STATUS_MOVES = {
 app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res) => {
   const { status } = req.body;
   const moves = STATUS_MOVES[req.user.role] || {};
+  // A courier who still owes cash from a prior delivered order (and is on the 'per_order' settlement
+  // policy) cannot claim a new delivery until that cash is confirmed received by finance/admin.
+  if (req.user.role === 'delivery' && status === 'on_the_way') {
+    const gate = await cashCustody.canTakeDelivery(pool, req.user.id);
+    if (!gate.ok) {
+      return res.status(403).json({
+        error: 'unsettled_cash',
+        message: `لازم تسدد ${gate.amount} ج.م المستحقة عليك قبل ما تاخد أوردر جديد.`,
+        amount: gate.amount
+      });
+    }
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

@@ -71,6 +71,14 @@ button:focus-visible{outline:3px solid var(--t);outline-offset:2px}
 .bar span{display:block;height:100%;background:var(--g);border-radius:8px}
 .code{display:flex;justify-content:space-between;align-items:center;background:var(--g2);border-radius:12px;padding:12px 14px;margin:12px 0;font-weight:800;font-size:20px;letter-spacing:2px}
 .code button{background:var(--g);color:#fff;border:0;border-radius:10px;padding:8px 14px;font-size:14px;letter-spacing:0}
+.welcomeBanner{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:18px;margin-bottom:12px;display:block;box-shadow:0 4px 14px rgba(0,0,0,.1)}
+.giftcard{position:relative;overflow:hidden;background:linear-gradient(135deg,var(--g),#2d7a47);color:#fff;border-radius:20px;padding:22px 18px;margin-bottom:12px;box-shadow:0 8px 20px rgba(31,91,52,.3)}
+.giftcard::before{content:"🌿";position:absolute;font-size:120px;opacity:.12;inset-inline-end:-20px;top:-30px;transform:rotate(15deg)}
+.giftcard .gcTop{font-size:15px;font-weight:700;opacity:.92;margin:0 0 6px;position:relative}
+.giftcard .gcPct{font-size:46px;font-weight:800;line-height:1;margin:0 0 4px;position:relative}
+.giftcard .gcSub{font-size:13px;opacity:.88;margin:0 0 14px;position:relative}
+.giftcard .code{background:rgba(255,255,255,.16);backdrop-filter:blur(2px);color:#fff;margin:0;position:relative}
+.giftcard .code button{background:#fff;color:var(--g)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
 .sc{background:var(--ink);color:var(--bg);border-radius:12px;padding:14px;margin-bottom:10px;border-inline-start:4px solid var(--t)}
 .sc .mute{color:var(--bg);opacity:.72}
@@ -187,12 +195,19 @@ function adminV(){
   '<input id="pEmoji" placeholder="إيموجي بديل عن الصورة" value="'+p.e+'" style="'+INP+'">'+
   '<button class="big" id="pSave">حفظ</button><button class="chip" id="pCancel" style="margin-top:8px">إلغاء</button>';
 }
+// صورة ترحيبية مؤقتة (ستوك) لحد ما يتحط لوجو/صورة خاصة بالمحل — غيّر الرابط ده لصورة المنتجات الحقيقية وقت ما تجهز.
+var WELCOME_IMG="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=800&q=70";
 function refWelcomeCard(){
   if(!refWelcome||!incomingRef||me.phone)return "";
-  return '<div class="card" style="background:var(--g2)"><p style="margin:0">'+esc(refWelcome.referrer_name)+' دعاك لتجربة سوق الطازج 🌿<br><span class="mute">اشترِ وخد خصمك فورًا، 30% على أي فئة تختارها.</span></p></div>';
+  var pct=pctFmt(Number(refWelcome.sacrifice_pct)||30);
+  var sub=refWelcome.progressive_steps?esc(refStepsSentence(refWelcome)):'اشترِ وخد خصمك فورًا على أي فئة تختارها.';
+  return '<img class="welcomeBanner" src="'+WELCOME_IMG+'" alt="خضار وفاكهة طازجة" loading="lazy">'+
+    '<div class="giftcard"><p class="gcTop">'+esc(refWelcome.referrer_name)+' دعاك لتجربة سوق الطازج 🌿</p>'+
+    '<div class="gcPct">'+pct+'%</div><p class="gcSub" style="margin-bottom:0">'+sub+'</p></div>';
 }
 function acctV(){
   if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
+  if(otpState){$("acct").innerHTML=otpCard();return}
   $("acct").innerHTML=refWelcomeCard()+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
 var cpxRecorder=null,cpxChunks=[],cpxBlob=null,cpxStream=null;
 function toggleComplaintRec(btn){
@@ -340,7 +355,7 @@ function cartV(){
   if(!ids.length){$("cart").innerHTML='<div class="empty"><div style="font-size:56px">🧺</div>سلتك فارغة.<br>أضف منتجات من المتجر لتبدأ.</div>';return}
   var s=sub(),d=Math.min(estimateReferralDiscount(),s),tot=s+FEE-d;
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
-  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
+  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':(otpState?otpCard():refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>'))+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
 }
 function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
 function timesFor(o){
@@ -441,11 +456,13 @@ function refV(){
   var r=refData;
   var link=location.origin+r.link_path;
   var html='';
-  html+='<div class="card"><h2>🎁 هات صاحب جديد يشترِ، وليك خصم على أي فئة تختارها</h2>'+
-    '<p class="mute">شارك الرابط ده مع صاحبك، ولما يشترِ هتاخد خصمك فورًا.</p>'+
-    '<p class="mute" style="margin-top:6px">'+esc(refStepsSentence(r))+'</p>'+
+  var headlinePct=pctFmt(Number(r.sacrifice_pct)||30);
+  html+='<div class="giftcard">'+
+    '<p class="gcTop">🎁 هات صاحب جديد يشترِ، وليك خصم على أي فئة تختارها</p>'+
+    '<div class="gcPct">'+headlinePct+'%</div>'+
+    '<p class="gcSub">'+esc(refStepsSentence(r))+'</p>'+
     '<div class="code"><span id="rc">'+esc(r.code)+'</span><button id="copy" data-link="'+esc(link)+'">نسخ الرابط</button></div>'+
-    '<p class="mute" style="margin-top:8px">فتحوا الرابط: <b>'+num(r.stats.link_opens)+'</b> · سجّلوا: <b>'+num(r.stats.registered)+'</b> · فعّلوا خصمك: <b>'+num(r.stats.rewarded)+'</b></p>'+
+    '<p class="mute" style="margin-top:8px;color:#fff;opacity:.85">فتحوا الرابط: <b>'+num(r.stats.link_opens)+'</b> · سجّلوا: <b>'+num(r.stats.registered)+'</b> · فعّلوا خصمك: <b>'+num(r.stats.rewarded)+'</b></p>'+
     '</div>';
   if(r.invited_by){
     html+='<div class="card"><p class="mute" style="margin:0">'+esc(r.invited_by)+' دعاك لتجربة سوق الطازج 🌿</p></div>';
@@ -544,6 +561,28 @@ document.addEventListener("click",function(e){
     identifyCustomer(n1,p1,a1,function(){t.disabled=false;editing=false;toast("تم الحفظ، أهلاً "+n1);go("shop")},function(msg){t.disabled=false;toast(msg)});
   }
   else if(t.id==="editme"){editing=true;draw()}
+  else if(t.id==="otpConfirm"){
+    if(!otpState)return;
+    var code=($("otpCode").value||"").trim();
+    if(code.length!==6){toast("أدخل كود مكوّن من 6 أرقام");return}
+    t.disabled=true;
+    apiCall("POST","/auth/otp/verify",{phone:otpState.phone,code:code}).then(function(r){
+      t.disabled=false;
+      if(r&&r.verified&&r.verification_token){
+        var st=otpState;otpState=null;
+        finishIdentify(st.name,st.phone,st.addr,r.verification_token,st.onOk,st.onFail);
+      }else{toast((r&&r.message)||"الكود غير صحيح")}
+    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
+  }
+  else if(t.id==="otpResend"){
+    if(!otpState)return;
+    t.disabled=true;
+    apiCall("POST","/auth/otp/send",{phone:otpState.phone,referral_code:incomingRef||undefined}).then(function(r){
+      t.disabled=false;
+      if(r&&r.sent)toast("تم إرسال كود جديد");else toast((r&&r.message)||"تعذّر إرسال الكود")
+    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
+  }
+  else if(t.id==="otpCancel"){otpState=null;draw()}
   else if(t.id==="ckReg"){
     var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim();
     if(!n2||p2.replace(/\D/g,"").length<10||!a2){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
@@ -574,17 +613,60 @@ function authV(){
 }
 function startApp(){authV();hello();draw();if(TOK){refreshMyOrders();loadReferral(true)}loadRefWelcome();go("shop")}
 function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}draw()}
-// Called once we have name+phone+address (collected inline at checkout or in the account tab).
-// No password: customers are identified purely by phone number.
-function identifyCustomer(name,phone,addr,onOk,onFail){
-  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr,referral_code:incomingRef||undefined}).then(function(r){
+// ----- OTP (phone verification) -----
+// otpState holds the pending registration so we can finish it right after the code is confirmed.
+var otpState=null; // {name,phone,addr,onOk,onFail,verification_token}
+function otpCard(){
+  if(!otpState)return "";
+  return '<div class="card"><h2>تأكيد رقم الموبايل</h2>'+
+    '<p class="mute">بعتنالك كود من 6 أرقام على '+esc(otpState.phone)+' عن طريق SMS.</p>'+
+    '<input id="otpCode" inputmode="numeric" maxlength="6" placeholder="كود التحقق" style="'+INP+';letter-spacing:4px;text-align:center;font-size:20px">'+
+    '<button class="big" id="otpConfirm">تأكيد الكود</button>'+
+    '<button class="chip" id="otpResend" style="width:100%;margin-top:8px">إعادة إرسال الكود</button>'+
+    '<button class="chip" id="otpCancel" style="width:100%;margin-top:8px;background:transparent">رجوع</button></div>';
+}
+function startOtp(name,phone,addr,onOk,onFail){
+  apiCall("POST","/auth/otp/send",{phone:phone,referral_code:incomingRef||undefined}).then(function(r){
+    if(r&&r.needed===false){ // already verified before, no OTP needed now
+      finishIdentify(name,phone,addr,null,onOk,onFail);return;
+    }
+    if(r&&r.sent){
+      otpState={name:name,phone:phone,addr:addr,onOk:onOk,onFail:onFail};draw();
+    }else{
+      if(onFail)onFail((r&&r.message)||"تعذّر إرسال كود التحقق");
+    }
+  }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")});
+}
+function referralRejectMsg(reason){
+  var map={
+    already_referred:"تمت دعوة هذا الرقم من قبل، فلا يمكن تكرار الإحالة.",
+    same_person:"لا يمكنك استخدام كود الإحالة الخاص بك أنت.",
+    address_cap:"تم تجاوز الحد المسموح به من الإحالات على هذا العنوان.",
+    invalid_code:"كود الإحالة غير صحيح."
+  };
+  return map[reason]||null;
+}
+function finishIdentify(name,phone,addr,verification_token,onOk,onFail){
+  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr,referral_code:incomingRef||undefined,verification_token:verification_token||undefined}).then(function(r){
     if(r&&r.token){
       TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address};
       try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe();localStorage.removeItem("sf_ref")}catch(x){}
       incomingRef="";refWelcome=null;
-      hello();loadReferral(true);if(onOk)onOk()
+      hello();loadReferral(true);if(onOk)onOk();
+      if(r.referral&&r.referral.ok===false){
+        var m=referralRejectMsg(r.referral.reason);
+        if(m)setTimeout(function(){toast(m)},1700)
+      }
+    }else if(r&&r.error==="otp_required"){
+      startOtp(name,phone,addr,onOk,onFail);
     }else{if(onFail)onFail((r&&r.message)||"تعذّر حفظ بياناتك")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
+}
+// Called once we have name+phone+address (collected inline at checkout or in the account tab).
+// No password: customers are identified purely by phone number. Transparently handles OTP if the
+// admin has turned phone verification on — otherwise this behaves exactly as before.
+function identifyCustomer(name,phone,addr,onOk,onFail){
+  finishIdentify(name,phone,addr,null,onOk,onFail);
 }
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
