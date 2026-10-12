@@ -127,18 +127,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 <section id="driver"></section>
 
 <section id="admin"></section>
-<section id="ref">
-  <div class="card">
-    <h2>🎁 ادعُ أصدقاءك واربح</h2>
-    <p class="mute">تحصل على <b id="rw"></b> رصيد عن كل صديق يكمل أول طلب. الحد الأقصى <b id="cp"></b> أصدقاء.</p>
-    <div class="code"><span id="rc">FRESH-7Q2K</span><button id="copy">نسخ الكود</button></div>
-    <div class="bar"><span id="rb"></span></div>
-    <div class="mute" id="rt"></div>
-  </div>
-  <div class="card"><h2>رصيدك</h2><div class="price" id="bal" style="font-size:26px;color:var(--g)"></div>
-  <p class="mute">يُخصم تلقائيًا من طلبك القادم.</p>
-  <button class="big" id="sim" style="background:var(--g)">جرّب: صديق أكمل طلبه</button></div>
-</section>
+<section id="ref"></section>
 
 <div id="toast"></div>
 <nav id="nav">
@@ -150,7 +139,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 </nav>
 
 <script>
-var CUR="ج.م",REWARD=10,CAP=5,FEE=8;
+var CUR="ج.م",FEE=8;
 var P=[
 {id:1,n:"طماطم",e:"🍅",p:6,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1561136594-7f68413baa99?w=300&q=80"},{id:2,n:"خيار",e:"🥒",p:5,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1604977042946-1eecc30f269e?w=300&q=80"},
 {id:3,n:"جزر",e:"🥕",p:4,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1598170845058-32b9d6a5da37?w=300&q=80"},{id:4,n:"بطاطس",e:"🥔",p:5,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=300&q=80"},
@@ -160,6 +149,20 @@ var P=[
 var usedRefs=[],payErr="";
 var me={name:"",phone:"",addr:""},editing=false;
 try{var sv=JSON.parse(localStorage.getItem("sf_me")||"null");if(sv&&sv.phone)me=sv}catch(x){}
+var incomingRef="";
+try{
+  var qp=new URLSearchParams(location.search);
+  var qref=qp.get("ref");
+  if(qref)localStorage.setItem("sf_ref",qref);
+  incomingRef=qref||localStorage.getItem("sf_ref")||"";
+}catch(x){}
+var refWelcome=null;
+function loadRefWelcome(){
+  if(!incomingRef||me.phone)return;
+  fetch(API+"/referral/link/"+encodeURIComponent(incomingRef)).then(function(r){return r.json()}).then(function(r){
+    if(r&&r.valid){refWelcome=r;draw()}
+  }).catch(function(){});
+}
 function saveMe(){try{localStorage.setItem("sf_me",JSON.stringify(me))}catch(x){}}
 function hello(){$("hi").textContent=me.phone?"أهلاً "+me.name+" 👋":"خضار وفواكه طازجة لباب بيتك"}
 var INP='width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;margin-bottom:8px';
@@ -184,9 +187,13 @@ function adminV(){
   '<input id="pEmoji" placeholder="إيموجي بديل عن الصورة" value="'+p.e+'" style="'+INP+'">'+
   '<button class="big" id="pSave">حفظ</button><button class="chip" id="pCancel" style="margin-top:8px">إلغاء</button>';
 }
+function refWelcomeCard(){
+  if(!refWelcome||!incomingRef||me.phone)return "";
+  return '<div class="card" style="background:var(--g2)"><p style="margin:0">'+esc(refWelcome.referrer_name)+' دعاك لتجربة سوق الطازج 🌿<br><span class="mute">اشترِ وخد خصمك فورًا، 30% على أي فئة تختارها.</span></p></div>';
+}
 function acctV(){
   if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
-  $("acct").innerHTML='<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
+  $("acct").innerHTML=refWelcomeCard()+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
 var cpxRecorder=null,cpxChunks=[],cpxBlob=null,cpxStream=null;
 function toggleComplaintRec(btn){
   if(cpxRecorder&&cpxRecorder.state==="recording"){
@@ -262,7 +269,7 @@ function refreshMyOrders(){
     orders=r.map(function(x){
       var local=orders.find(function(o){return o.id===x.id})||{};
       return Object.assign({},local,{
-        id:x.id,status:x.status,total:Number(x.total),fee:Number(x.delivery_fee),
+        id:x.id,status:x.status,total:Number(x.total),fee:Number(x.delivery_fee),reward_discount:Number(x.reward_discount||0),
         pay:x.payment_status,ref:x.payment_ref,created_at:x.created_at,
         prep_started_at:x.prep_started_at,prepared_at:x.prepared_at,
         delivery_started_at:x.delivery_started_at,delivered_at:x.delivered_at,
@@ -278,7 +285,7 @@ function loadProducts(){
 }
 loadProducts();
 setInterval(loadProducts,30000);
-var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[],friends=2,used=0;
+var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[];
 fetch(API+"/categories").then(function(r){return r.json()}).then(function(a){if(a&&a.length){CATMETA=a;CATS=["الكل"].concat(a.map(function(c){return c.name}));draw()}}).catch(function(){});
 var STATUS_SEQ=["awaiting_prep","preparing","awaiting_delivery","on_the_way","delivered"];
 var STATUS_LABELS={awaiting_prep:"بانتظار التجهيز",preparing:"جارٍ التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق إليك",delivered:"تم التسليم",cancelled:"تم الإلغاء"};
@@ -288,10 +295,10 @@ function esc(x){return String(x==null?"":x).replace(/[&<>"']/g,function(c){retur
 function num(n){return n.toLocaleString("ar-EG")}
 function money(n){return num(n)+" "+CUR}
 function toast(t){var x=$("toast");x.textContent=t;x.className="show";setTimeout(function(){x.className=""},1600)}
-function bal(){return Math.min(friends,CAP)*REWARD-used}
 function go(t){
   document.querySelectorAll("section").forEach(function(s){s.classList.toggle("on",s.id===t)});
   document.querySelectorAll("nav button").forEach(function(b){b.classList.toggle("on",b.dataset.t===t)});
+  if(t==="ref")loadReferral(true);
   window.scrollTo(0,0);draw();
 }
 var FALLBACK_PALETTE=["#FFEAD1","#D7F0E3","#D9E9FB","#FBE1EC","#FFF3C4","#E3DEF8"];
@@ -314,12 +321,26 @@ function shop(){
 }
 function sub(){return P.reduce(function(s,p){return s+(cart[p.id]||0)*p.p},0)}
 function count(){return Object.values(cart).reduce(function(a,b){return a+b},0)}
+// Estimate only — a preview so the customer isn't surprised at checkout. The server
+// recalculates this from scratch (with the live admin-set percentage) and is always
+// the authority on the real charged amount; this just assumes a 30% headline rate.
+function estimateReferralDiscount(){
+  if(!refData||!refData.entitlements)return 0;
+  var sum=0;
+  refData.entitlements.forEach(function(e){
+    if(!e.active||!e.category)return;
+    var lineSum=0;
+    P.forEach(function(p){if(p.c===e.category&&cart[p.id])lineSum+=cart[p.id]*p.p});
+    if(lineSum>0)sum+=lineSum*0.3;
+  });
+  return Math.round(sum*100)/100;
+}
 function cartV(){
   var ids=P.filter(function(p){return cart[p.id]});
   if(!ids.length){$("cart").innerHTML='<div class="empty"><div style="font-size:56px">🧺</div>سلتك فارغة.<br>أضف منتجات من المتجر لتبدأ.</div>';return}
-  var s=sub(),d=Math.min(bal(),s),tot=s+FEE-d;
+  var s=sub(),d=Math.min(estimateReferralDiscount(),s),tot=s+FEE-d;
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
-  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>رصيد المكافآت</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
+  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>')+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
 }
 function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
 function timesFor(o){
@@ -335,7 +356,7 @@ function ordV(){
   var live=orders.filter(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"});
   if(!live.length){$("orders").innerHTML='<div class="empty"><div style="font-size:56px">🚚</div>لا توجد طلبات حالية.</div>';return}
   $("orders").innerHTML=live.map(function(o,i){
-    var h='<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+(o.items?num(o.items)+' منتجات · ':'')+money(o.total)+'</div>';
+    var h='<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+(o.items?num(o.items)+' منتجات · ':'')+money(o.total)+'</div>'+(o.reward_discount>0?'<div class="mute" style="color:var(--g)">وفّرت '+money(o.reward_discount)+' بخصم الإحالة 🎁</div>':'');
     if(o.status==="cancelled")return h+'<p><b>تم إلغاء الطلب</b></p>'+timesFor(o)+'</div>';
     if(o.pay)h+='<p class="mute">حالة الدفع: '+(o.pay==="due"?"الدفع عند الاستلام عبر فودافون كاش":o.pay==="pending"?"بانتظار تأكيد التحويل رقم "+o.ref:"تم تأكيد الدفع")+'</p>';
     var curIdx=STATUS_SEQ.indexOf(o.status);
@@ -367,13 +388,84 @@ function drvV(){
     if(o.st===2)return staffHead(o,"في الطريق")+'<div class="mute">العنوان: '+o.addr+'</div><div class="mute">رسوم التوصيل: '+money(o.fee)+'</div><p class="mute" style="margin-top:8px">بانتظار تأكيد الاستلام والدفع من العميل</p></div>';
     return ""}).join("");
   $("driver").innerHTML='<h1 style="font-size:19px;margin:0 0 2px">لوحة مندوب التوصيل</h1><p class="mute" style="margin:0 0 12px">كل الطلبات الجاهزة أو الجارٍ توصيلها، بعنوان وهاتف العميل</p>'+(h||'<div class="empty"><div style="font-size:56px">🛵</div>لا توجد طلبات جاهزة للتوصيل الآن.</div>')}
+var refData=null,refLoading=false;
+function loadReferral(force){
+  if(!me.id||!TOK){refData=null;return}
+  if(refLoading&&!force)return;
+  refLoading=true;
+  apiCall("GET","/referral/me").then(function(r){
+    refLoading=false;
+    if(r&&r.code){refData=r;draw()}
+  }).catch(function(){refLoading=false});
+}
+function refStatusLabel(f){
+  if(f.status==="rewarded")return f.needs_category?"اشترى! اختر فئتك لتفعيل خصمك":"مُفعَّل ✅";
+  return "سجّل، في انتظار أول طلب";
+}
+function refFriendRow(f){
+  return '<div class="li"><span class="e" style="font-size:26px">'+(f.status==="rewarded"?"✅":"⏳")+'</span><div class="n"><b>'+esc(f.name)+'</b><div class="mute">'+refStatusLabel(f)+(f.category?' · فئتك: '+esc(f.category):'')+(f.my_saving>0?' · وفّرت '+money(f.my_saving):'')+'</div></div></div>';
+}
+function refStepsSentence(r){
+  var pct=Number(r&&r.sacrifice_pct)||30;
+  var steps=(r&&r.progressive_steps&&r.progressive_steps.length)?r.progressive_steps:[0.5,0.75,1];
+  var vals=steps.map(function(x){return Math.round(x*pct*10)/10});
+  // collapse repeated trailing value (e.g. [15,22.5,30,30] -> show "من ثالث طلب")
+  var uniq=[];for(var i=0;i<vals.length;i++){if(i===0||vals[i]!==vals[i-1])uniq.push({v:vals[i],ord:i+1})}
+  var ordWords=["أول","تاني","تالت","رابع","خامس","سادس","سابع","تامن","تاسع","عاشر"];
+  var parts=uniq.map(function(u,i){
+    var word=ordWords[u.ord-1]||(u.ord+"‑");
+    var isLast=i===uniq.length-1;
+    if(isLast&&u.ord<steps.length)return 'ومن '+word+' طلب وبعد كده '+pctFmt(u.v)+'%';
+    return word+' طلب '+pctFmt(u.v)+'%';
+  });
+  return 'الخصم بيبدأ بـ'+parts.join('، ')+'.';
+}
+function pctFmt(n){return (Math.round(n*10)/10).toString().replace(/\.0$/,'')}
+function refCategoryPicker(ent,choices){
+  if(!choices||!choices.length)return '<p class="mute" style="margin-top:6px">كل الفئات مُستخدمة حاليًا في إحالات أخرى.</p>';
+  return '<div style="margin-top:8px"><p class="mute" style="margin:0 0 6px">اختر الفئة اللي عايز خصمك عليها (نهائي، اختَر بعناية):</p>'+
+    '<select data-ent="'+ent+'" class="refCatSel" style="'+INP+'"><option value="">اختر فئة…</option>'+
+    choices.map(function(c){return '<option value="'+esc(c)+'">'+esc(c)+'</option>'}).join("")+
+    '</select><button class="chip refCatBtn" data-ent="'+ent+'">تأكيد الفئة</button></div>';
+}
 function refV(){
-  var n=Math.min(friends,CAP);
-  $("rw").textContent=money(REWARD);$("cp").textContent=num(CAP);
-  $("rb").style.width=(n/CAP*100)+"%";
-  $("rt").textContent=n>=CAP?"وصلت للحد الأقصى من المكافآت. شكرًا لك!":"دعوت "+num(n)+" من "+num(CAP)+" أصدقاء";
-  $("bal").textContent=money(bal());
-  $("sim").disabled=friends>=CAP;
+  if(!me.id){
+    $("ref").innerHTML='<div class="card"><h2>🎁 المكافآت والإحالة</h2><p class="mute">سجّل بياناتك الأول من تبويب "حسابي" عشان تقدر تدعو أصحابك وتاخد مكافآتك.</p></div>';
+    return;
+  }
+  if(!refData){
+    $("ref").innerHTML='<div class="card"><h2>🎁 المكافآت والإحالة</h2><p class="mute">جارٍ التحميل…</p></div>';
+    loadReferral();
+    return;
+  }
+  var r=refData;
+  var link=location.origin+r.link_path;
+  var html='';
+  html+='<div class="card"><h2>🎁 هات صاحب جديد يشترِ، وليك خصم على أي فئة تختارها</h2>'+
+    '<p class="mute">شارك الرابط ده مع صاحبك، ولما يشترِ هتاخد خصمك فورًا.</p>'+
+    '<p class="mute" style="margin-top:6px">'+esc(refStepsSentence(r))+'</p>'+
+    '<div class="code"><span id="rc">'+esc(r.code)+'</span><button id="copy" data-link="'+esc(link)+'">نسخ الرابط</button></div>'+
+    '<p class="mute" style="margin-top:8px">فتحوا الرابط: <b>'+num(r.stats.link_opens)+'</b> · سجّلوا: <b>'+num(r.stats.registered)+'</b> · فعّلوا خصمك: <b>'+num(r.stats.rewarded)+'</b></p>'+
+    '</div>';
+  if(r.invited_by){
+    html+='<div class="card"><p class="mute" style="margin:0">'+esc(r.invited_by)+' دعاك لتجربة سوق الطازج 🌿</p></div>';
+  }
+  html+='<div class="card"><h2>وفّرت حتى الآن</h2><div class="price" style="font-size:26px;color:var(--g)">'+money(r.total_saved)+'</div>';
+  if(r.entitlements&&r.entitlements.length){
+    html+=r.entitlements.map(function(e){
+      var roleLbl=e.role==="referrer"?"خصمك على صديق اشترى":"خصمك كعميل جديد";
+      if(!e.active)return '';
+      if(e.needs_category)return '<div style="margin-top:10px"><b>'+roleLbl+'</b>'+refCategoryPicker(e.id,r.choosable_categories)+'</div>';
+      return '<div style="margin-top:6px" class="mute"><b>'+roleLbl+':</b> فئة '+esc(e.category)+' — وفّرت '+money(e.saved)+' حتى الآن</div>';
+    }).join("");
+  } else {
+    html+='<p class="mute" style="margin-top:6px">اشترِ أول طلب واحصل على خصمك فورًا على أي فئة تختارها. '+esc(refStepsSentence(r))+'</p>';
+  }
+  html+='</div>';
+  if(r.friends&&r.friends.length){
+    html+='<div class="card"><h2>أصحابك المدعوون</h2>'+r.friends.map(refFriendRow).join("")+'</div>';
+  }
+  $("ref").innerHTML=html;
 }
 function draw(){
   acctV();shop();cartV();adminV();ordV();storeV();drvV();refV();
@@ -416,12 +508,15 @@ document.addEventListener("click",function(e){
     if(!me.phone){toast("أكمل بياناتك فوق أولًا لإتمام الطلب");var ckn=$("ckName");if(ckn)ckn.focus();return}
     var nm=me.name,ph=me.phone,ad=me.addr;
     dbSaveCustomer(me);
-    var s=sub(),dd=Math.min(bal(),s);used+=dd;
+    var s=sub(),dd=Math.min(estimateReferralDiscount(),s); // display estimate only — server computes the real, authoritative discount
     var lines=P.filter(function(p){return cart[p.id]}).map(function(p){return {id:p.id,n:p.n,e:p.e,q:cart[p.id],u:p.u,line:cart[p.id]*p.p}});
-    var ord={items:count(),lines:lines,total:s+FEE-dd,fee:FEE,pay:"due",cust:nm,phone:ph,addr:ad};
-    dbSaveOrder(ord,function(){
+    var ord={items:count(),lines:lines,total:s+FEE-dd,fee:FEE,pay:"due",cust:nm,phone:ph,addr:ad,reward_discount:0};
+    dbSaveOrder(ord,function(resp){
       orders.unshift(ord);
-      cart={};toast("تم تأكيد طلبك");go("orders")
+      var realDiscount=Number(resp&&resp.reward_discount||0);
+      cart={};
+      toast(realDiscount>0?"تم تأكيد طلبك، ووفّرت "+money(realDiscount)+" بخصم الإحالة 🎁":"تم تأكيد طلبك");
+      loadReferral(true);go("orders")
     },function(msg){
       toast(msg)
     });}
@@ -457,8 +552,18 @@ document.addEventListener("click",function(e){
   }
   else if(t.id==="cpxRec"){toggleComplaintRec(t)}
   else if(t.id==="cpxSend"){sendComplaint(t)}
-  else if(t.id==="copy"){try{navigator.clipboard.writeText($("rc").textContent)}catch(x){}toast("تم نسخ الكود")}
-  else if(t.id==="sim"){if(friends<CAP){friends++;toast("تمت إضافة "+money(REWARD)+" إلى رصيدك");draw()}}
+  else if(t.id==="copy"){var txt=t.dataset.link||($("rc")&&$("rc").textContent)||"";try{navigator.clipboard.writeText(txt)}catch(x){}toast(t.dataset.link?"تم نسخ رابط الدعوة":"تم نسخ الكود")}
+  else if(d.ent&&t.classList.contains("refCatBtn")){
+    var sel=document.querySelector('select.refCatSel[data-ent="'+d.ent+'"]');
+    var catVal=sel&&sel.value;
+    if(!catVal){toast("اختر فئة أولًا");return}
+    t.disabled=true;
+    apiCall("POST","/referral/entitlements/"+d.ent+"/category",{category:catVal}).then(function(r){
+      t.disabled=false;
+      if(r&&r.category){toast("تم تفعيل خصمك على "+r.category);loadReferral(true)}
+      else{toast((r&&r.message)||"تعذّر حفظ الفئة")}
+    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")})
+  }
 });
 
 /* ===== AUTH ===== */
@@ -467,16 +572,17 @@ document.addEventListener("click",function(e){
 function authV(){
   var el=$("auth");if(el)el.style.display="none";
 }
-function startApp(){authV();hello();draw();if(TOK)refreshMyOrders();go("shop")}
+function startApp(){authV();hello();draw();if(TOK){refreshMyOrders();loadReferral(true)}loadRefWelcome();go("shop")}
 function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}draw()}
 // Called once we have name+phone+address (collected inline at checkout or in the account tab).
 // No password: customers are identified purely by phone number.
 function identifyCustomer(name,phone,addr,onOk,onFail){
-  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr}).then(function(r){
+  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr,referral_code:incomingRef||undefined}).then(function(r){
     if(r&&r.token){
       TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address};
-      try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe()}catch(x){}
-      hello();if(onOk)onOk()
+      try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe();localStorage.removeItem("sf_ref")}catch(x){}
+      incomingRef="";refWelcome=null;
+      hello();loadReferral(true);if(onOk)onOk()
     }else{if(onFail)onFail((r&&r.message)||"تعذّر حفظ بياناتك")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }

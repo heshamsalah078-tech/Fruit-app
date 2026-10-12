@@ -99,6 +99,7 @@ html[data-boot="app"] #app{display:block!important}
 <section id="stock"></section>
 <section id="lowstock"></section>
 <section id="shortages"></section>
+<section id="referral"></section>
 <section id="complaints"></section>
 <section id="team"></section>
 
@@ -136,7 +137,7 @@ var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -155,6 +156,7 @@ function go(t){
   if(t==="stock")stockLoad();
   if(t==="lowstock"){LOWSTK=null;lowStockShell()}
   if(t==="shortages"){SHORT=null;shortagesShell()}
+  if(t==="referral")referralLoad();
   if(t==="complaints"){COMPL=null;complaintsShell()}
 }
 
@@ -260,6 +262,41 @@ function shortagesBlock(){
   if(SHORT===null)return'';
   if(!SHORT.length)return '<div class="card"><p class="mute">لا توجد محاولات شراء فاشلة بسبب نقص المخزون حتى الآن 🎉</p></div>';
   return SHORT.map(function(x){return '<div class="card"><b>'+esc(x.customer_name)+'</b> · '+esc(x.customer_phone)+'<br>حاول طلب '+(x.emoji||"")+' '+esc(x.product_name)+' × '+x.requested_qty+' '+esc(x.unit)+' — المتاح وقتها كان '+x.available_qty+' '+esc(x.unit)+'<br><span class="mute">'+dt(x.created_at)+'</span></div>'}).join('');
+}
+/* ---------- referral settings (admin only) ---------- */
+var REF={settings:null},REFFLAGS=null;
+function referralLoad(){
+  apiCall("GET","/referral/settings").then(function(r){
+    if(r&&r.settings){REF=r;referralV()}
+  }).catch(function(){});
+}
+function referralStepsText(steps){return (steps||[]).map(function(x){return Math.round(x*100)}).join(",")}
+function referralV(){
+  var el=$("referral");if(!el||!REF.settings)return;
+  var s=REF.settings;
+  el.innerHTML='<h1 style="font-size:19px">🎁 إعدادات الإحالة والمكافآت</h1>'+
+    '<div class="card"><h2>الإعدادات العامة</h2>'+
+    '<p class="mute" style="margin:0 0 4px">نسبة الخصم من سعر الفئة المختارة (%) — أنت المسؤول عن مقارنتها بهامش ربحك</p><input id="refSac" type="number" min="0" max="100" value="'+s.sacrifice_pct+'">'+
+    '<p class="mute" style="margin:0 0 4px">مدة صلاحية الإحالة (أيام)</p><input id="refWin" type="number" min="1" value="'+s.window_days+'">'+
+    '<p class="mute" style="margin:0 0 4px">الحد الأقصى لإحالات نفس الشخص لنفس العنوان</p><input id="refPAC" type="number" min="1" value="'+s.person_address_cap+'">'+
+    '<p class="mute" style="margin:0 0 4px">الحد الأقصى الكلي للإحالات لنفس العنوان</p><input id="refAC" type="number" min="1" value="'+s.address_cap+'">'+
+    '<p class="mute" style="margin:0 0 4px">منحنى الزيادة التدريجية (نسب % من نسبة الخصم، مفصولة بفواصل، آخر رقم يتكرر)</p><input id="refSteps" value="'+referralStepsText(s.progressive_steps)+'">'+
+    '<label style="display:flex;align-items:center;gap:8px;margin:10px 0"><input type="checkbox" id="refEnforce" style="width:auto;margin:0"'+(s.enforce_address_caps?' checked':'')+'> تفعيل الحظر الفعلي عند تجاوز حدود العنوان (غير مفعّل = مراقبة فقط)</label>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin:0 0 10px"><input type="checkbox" id="refOtp" style="width:auto;margin:0"'+(s.otp_enforced?' checked':'')+'> طلب كود تحقق SMS عند التسجيل (يحتاج شركة SMS موصولة)</label>'+
+    '<button class="big" id="refSaveSettings">حفظ الإعدادات</button><p id="refErr" style="color:var(--t)"></p></div>'+
+    '<div class="card"><h2>سجل المراقبة (تجاوزات الحدود)</h2>'+
+    '<button class="big" id="refFlagsGo">🔍 استعلم الآن</button>'+referralFlagsBlock()+'</div>';
+}
+function referralFlagsBlock(){
+  if(REFFLAGS===null)return'';
+  if(!REFFLAGS.length)return '<p class="mute" style="margin-top:10px">لا توجد تجاوزات مسجّلة حتى الآن 🎉</p>';
+  return '<div style="margin-top:10px">'+REFFLAGS.map(function(f){
+    var kindTxt=f.kind==="person_address_cap"?"نفس الشخص تخطى حد العنوان":f.kind==="address_cap"?"العنوان تخطى الحد الكلي":f.kind;
+    return '<div class="card"><b>'+esc(kindTxt)+'</b><br><span class="mute">'+esc(f.referrer_name||"")+' ← '+esc(f.referred_name||"")+'</span><br><span class="mute">'+dt(f.created_at)+'</span></div>';
+  }).join('')+'</div>';
+}
+function referralFlagsQuery(){
+  apiCall("GET","/referral/flags").then(function(r){REFFLAGS=Array.isArray(r)?r:[];referralV()}).catch(function(){REFFLAGS=[];referralV()});
 }
 /* ---------- complaints (admin only) ---------- */
 var COMPL=null;
@@ -582,6 +619,23 @@ document.addEventListener("click",function(e){
   if(t.id==="driverGo"){ordQuery("driver");return}
   if(t.id==="shortGo"){shortagesQuery();return}
   if(t.id==="complGo"){complaintsQuery();return}
+  if(t.id==="refFlagsGo"){referralFlagsQuery();return}
+  if(t.id==="refSaveSettings"){
+    var stepsTxt=($("refSteps").value||"").split(",").map(function(x){return Number(x.trim())/100}).filter(function(x){return !isNaN(x)});
+    var rb={
+      sacrifice_pct:Number($("refSac").value),window_days:Number($("refWin").value),
+      person_address_cap:Number($("refPAC").value),address_cap:Number($("refAC").value),
+      progressive_steps:stepsTxt.length?stepsTxt:undefined,
+      enforce_address_caps:$("refEnforce").checked,otp_enforced:$("refOtp").checked
+    };
+    t.disabled=true;
+    apiCall("PUT","/referral/settings",rb).then(function(r){
+      t.disabled=false;
+      if(r&&r.settings){toast("تم حفظ الإعدادات");REF.settings=r.settings;referralV()}
+      else{$("refErr").textContent=(r&&r.message)||"تعذّر الحفظ"}
+    }).catch(function(){t.disabled=false;$("refErr").textContent="تعذّر الاتصال بالسيرفر"});
+    return;
+  }
 
   if(t.dataset.thrsave){
     var pid=t.dataset.thrsave;

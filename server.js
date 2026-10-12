@@ -100,6 +100,10 @@ function requireAuth(...roles) {
   };
 }
 
+// ---- REFERRAL / REWARDS v2 (see referral.js) ----
+const referral = require('./referral').init({ pool, requireAuth, jwt, JWT_SECRET, express });
+app.use(referral.router);
+
 // ---- PUSH SUBSCRIPTIONS ----
 app.get('/push/vapid-public-key', (req, res) => {
   res.json({ key: VAPID_PUBLIC_KEY });
@@ -234,12 +238,18 @@ app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
 // phone if they've ordered before, or creates a fresh record, and returns a token either
 // way so the rest of the API (orders, cart sync, complaints) keeps working unchanged.
 app.post('/auth/customer-identify', async (req, res) => {
-  const { name, phone, address } = req.body;
+  const { name, phone, address, referral_code, verification_token } = req.body;
   if (!name || !phone || !address) {
     return res.status(400).json({ error: 'missing_fields', message: 'من فضلك أكمل الاسم ورقم الموبايل والعنوان.' });
   }
+  // Phone verification (OTP) — only enforced once the admin switches it on (needs an SMS provider).
+  const refCfg = await referral.getSettings();
+  if (refCfg.otp_enforced && !(await referral.isPhoneVerified(phone, verification_token))) {
+    return res.status(403).json({ error: 'otp_required', message: 'محتاجين نتأكد من رقم موبايلك بكود SMS.' });
+  }
   const existing = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
   let customer;
+  let isNewCustomer = false;
   if (existing.rows.length) {
     const r = await pool.query(
       'UPDATE customers SET name=$1, address=$2 WHERE phone=$3 RETURNING id, name, phone, address',
@@ -253,9 +263,17 @@ app.post('/auth/customer-identify', async (req, res) => {
       [name, phone, address]
     );
     customer = r.rows[0];
+    isNewCustomer = true;
+  }
+  let referralResult = null;
+  try {
+    customer.referral_code = await referral.ensureCode(customer.id);
+    if (isNewCustomer && referral_code) referralResult = await referral.createReferral({ code: referral_code, customer, address });
+  } catch (e) {
+    console.error('referral on identify failed', e.message); // never block registration because of referrals
   }
   const token = makeToken({ id: customer.id, role: 'customer', name: customer.name });
-  res.json({ token, customer });
+  res.json({ token, customer, referral: referralResult });
 });
 
 app.post('/auth/staff-login', async (req, res) => {
@@ -413,7 +431,8 @@ app.post('/stock/movement', requireAuth('admin'), async (req, res) => {
 // (status -> 'on_the_way'). This way a confirmed-but-not-yet-shipped order holds its
 // items without falsely showing the warehouse as emptier than it really is.
 app.post('/orders', requireAuth('customer'), async (req, res) => {
-  const { customer_id, items, delivery_fee, reward_discount, total } = req.body;
+  const { customer_id, items, delivery_fee } = req.body;
+  if (Number(customer_id) !== req.user.id) return res.status(403).json({ error: 'forbidden' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -461,12 +480,18 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
       }
     }
 
+    // Referral discount is computed here on the server (never trusted from the app).
+    const rd = await referral.computeDiscount(client, customer_id, items);
+    const itemsSum = items.reduce((a, it) => a + Number(it.quantity) * Number(it.unit_price), 0);
+    const serverTotal = Math.max(Math.round((itemsSum + Number(delivery_fee || 0) - rd.discount) * 100) / 100, 0);
     const orderR = await client.query(
       `INSERT INTO orders (customer_id, status, delivery_fee, reward_discount, total, payment_status)
        VALUES ($1,'awaiting_prep',$2,$3,$4,'due') RETURNING *`,
-      [customer_id, delivery_fee, reward_discount, total]
+      [customer_id, delivery_fee, rd.discount, serverTotal]
     );
     const order = orderR.rows[0];
+    await referral.recordDiscount(client, order.id, customer_id, rd.lines);
+    order.referral_discount_lines = rd.lines;
     for (const it of items) {
       await client.query(
         `INSERT INTO order_items (order_id, product_id, quantity, unit_price, line_total)
@@ -627,6 +652,8 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
       }
     }
 
+    if (status === 'delivered') await referral.onDelivered(client, req.params.id);
+
     await client.query('COMMIT');
     res.json(r.rows[0]);
   } catch (e) {
@@ -670,6 +697,7 @@ app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, re
       }
     }
     const r = await client.query("UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *", [order.id]);
+    await referral.clearOrderRewards(client, order.id);
     await client.query('COMMIT');
     res.json(r.rows[0]);
   } catch (e) {
