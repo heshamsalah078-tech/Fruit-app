@@ -298,7 +298,7 @@ app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
   if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name || !phone || !password || password.length < 6) {
     return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
   }
-  if (settlement_mode && !['per_order', 'daily', 'weekly'].includes(settlement_mode)) {
+  if (settlement_mode && !['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) {
     return res.status(400).json({ error: 'invalid_settlement_mode' });
   }
   const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
@@ -316,7 +316,7 @@ app.patch('/staff/:id', requireAuth('admin'), async (req, res) => {
   const { name, job_title, role, password, settlement_mode } = req.body;
   if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
   if (Number(req.params.id) === req.user.id && role !== 'admin') return res.status(400).json({ error: 'self' });
-  if (settlement_mode && !['per_order', 'daily', 'weekly'].includes(settlement_mode)) {
+  if (settlement_mode && !['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) {
     return res.status(400).json({ error: 'invalid_settlement_mode' });
   }
   if (role === 'delivery' && settlement_mode) {
@@ -643,7 +643,9 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
     if (!gate.ok) {
       return res.status(403).json({
         error: 'unsettled_cash',
-        message: `لازم تسدد ${gate.amount} ج.م المستحقة عليك قبل ما تاخد أوردر جديد.`,
+        message: gate.reason === 'suspended'
+          ? 'تم إيقاف التعامل معك حالياً. تواصل مع الإدارة.'
+          : `لازم تسدد ${gate.amount} ج.م المستحقة عليك قبل ما تاخد أوردر جديد.`,
         amount: gate.amount
       });
     }

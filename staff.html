@@ -103,6 +103,7 @@ html[data-boot="app"] #app{display:block!important}
 <section id="complaints"></section>
 <section id="team"></section>
 <section id="cash"></section>
+<section id="couriers"></section>
 
 </div>
 
@@ -135,12 +136,12 @@ function dt(s){
 }
 
 var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة",finance:"مدير مالي"};
-var SMN={per_order:"أوردر بأوردر",daily:"يومي",weekly:"أسبوعي"};
+var SMN={per_order:"أوردر بأوردر",daily:"يومي",weekly:"أسبوعي",suspended:"موقوف التعامل"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"],["cash","💵","حساباتي"]],
   finance:[["cash","💵","التحصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
+  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
@@ -162,6 +163,7 @@ function go(t){
   if(t==="referral")referralLoad();
   if(t==="complaints"){COMPL=null;complaintsShell()}
   if(t==="cash")cashLoad();
+  if(t==="couriers")crLoad();
 }
 
 /* ---------- team (admin) ---------- */
@@ -191,17 +193,23 @@ function teamV(){
   $("tR").addEventListener("change",syncSM);syncSM();
 }
 
-/* ---------- cash custody (delivery: my status / finance+admin: dashboard) ---------- */
-var CASH={mine:null,pending:null,overview:null};
+/* ---------- cash custody (delivery: my status / finance+admin: per-order collection) ---------- */
+var CASH={mine:null,pending:null,overview:null,orders:null,sel:{}};
 function cashLoad(){
   if(ROLE==="delivery"){
     apiCall("GET","/cash/my-status").then(function(r){CASH.mine=r;cashV()}).catch(function(){});
   }else if(ROLE==="finance"||ROLE==="admin"){
     Promise.all([
       apiCall("GET","/cash/pending").then(function(r){CASH.pending=r}),
-      apiCall("GET","/cash/overview").then(function(r){CASH.overview=r})
+      apiCall("GET","/cash/overview").then(function(r){CASH.overview=r}),
+      apiCall("GET","/cash/orders").then(function(r){CASH.orders=(r&&r.orders)||[]})
     ]).then(cashV).catch(function(){});
   }
+}
+function cashOrderRow(o){
+  var st=o.cash_status,badge=st==="received"?'<span style="color:#1b7a3d">✅ تم الاستلام</span>':st==="not_received"?'<span style="color:var(--t)">❌ ما اتسلمش</span>':'<span class="mute">⏳ لم يُحسم</span>';
+  var chk=st==="received"?'':'<input type="checkbox" data-csel="'+o.id+'"'+(CASH.sel[o.id]?' checked':'')+' style="width:20px;height:20px;margin-left:10px">';
+  return '<div class="card row">'+'<div>'+chk+'<b>أوردر #'+o.id+'</b> — '+o.total+' ج.م<br><span class="mute">'+(o.delivered_at?dt(o.delivered_at):dt(o.created_at))+(o.decided_by_name?' · قرار: '+esc(o.decided_by_name):'')+'</span></div><div>'+badge+'</div></div>';
 }
 function cashV(){
   var el=$("cash");if(!el)return;
@@ -212,32 +220,68 @@ function cashV(){
     if(m.owed>0){
       html+='<div class="card" style="background:#5a1f1f;color:#fff"><b>المستحق عليك حالياً: '+m.owed+' ج.م</b><br><span class="mute" style="color:#eee">عن '+m.order_count+' طلب تم تسليمه</span>'+
         (m.blocked?'<p style="margin-top:8px;font-weight:700">🚫 لا يمكنك استلام أوردر توصيل جديد لحد ما يتم تأكيد التسديد.</p>':'')+
-        (m.pending&&m.pending.length?'<p class="mute" style="color:#eee;margin-top:8px">⏳ في انتظار تأكيد المدير المالي/الإدارة لتسديد سابق بقيمة '+m.pending[m.pending.length-1].amount+' ج.م</p>':
-          '<button class="big" id="cashSettle" style="margin-top:10px">✅ سددت المبلغ ده</button>')+
-        '</div>';
+        '<p class="mute" style="color:#eee;margin-top:8px">سلّم المبلغ للمحصِّل، وهو اللي هيأكد استلامه على كل أوردر.</p></div>';
     }else{
       html+='<div class="card"><b>لا يوجد مبلغ مستحق عليك حالياً 🎉</b></div>';
     }
     el.innerHTML=html;
   }else{
-    var ov=CASH.overview,pd=CASH.pending;
-    if(!ov||!pd){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
-    var html='<h1 style="font-size:19px">💵 التحصيل</h1>';
+    var ov=CASH.overview,pd=CASH.pending,os=CASH.orders;
+    if(!ov||!pd||!os){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
+    var html='<h1 style="font-size:19px">💵 التحصيل من الدليفرية</h1>';
     if(ROLE==="finance"){
-      html+='<div class="card"><b>الرصيد في عهدتك حالياً: '+ov.my_custody+' ج.م</b>'+
-        (ov.my_custody>0?'<br><button class="big" id="cashHandover" style="margin-top:10px">📤 توريد الرصيد للإدارة</button>':'')+
-        '</div>';
+      html+='<div class="card"><b>🏦 المدير المالي — الرصيد في عهدتك: '+ov.my_custody+' ج.م</b>'+
+        (ov.my_custody>0?'<br><button class="big" id="cashHandover" style="margin-top:10px">📤 توريد الرصيد للإدارة</button>':'')+'</div>';
     }
-    html+='<h2 style="font-size:15px;margin:14px 0 6px">تسديدات مناديب بانتظار التأكيد ('+pd.courier_settlements.length+')</h2>'+
-      (pd.courier_settlements.length?pd.courier_settlements.map(function(e){return '<div class="card"><b>'+esc(e.from_name)+'</b> — '+e.amount+' ج.م عن '+(e.order_ids||[]).length+' طلب<br><span class="mute">أبلغ بالتسديد: '+dt(e.reported_at)+'</span><br><button class="big" style="margin-top:8px" data-cashconf="'+e.id+'">✅ تأكيد الاستلام</button></div>'}).join(''):'<p class="mute">لا يوجد تسديدات بانتظار التأكيد.</p>');
+    var by={};os.forEach(function(o){(by[o.courier_id]=by[o.courier_id]||{name:o.courier_name,rows:[]}).rows.push(o)});
+    var ids=Object.keys(by);
+    var selCount=Object.keys(CASH.sel).filter(function(k){return CASH.sel[k]}).length;
+    html+='<div class="card"><b>حدّد الأوردرات اللي استلمت فلوسها ('+selCount+' محدد)</b><br>'+
+      '<button class="big" id="cashRecv" style="margin-top:8px"'+(selCount?'':' disabled')+'>✅ تم الاستلام</button> '+
+      '<button class="chip" id="cashNotRecv" style="margin-top:8px;color:var(--t)"'+(selCount?'':' disabled')+'>❌ ما تمش الاستلام</button></div>';
+    if(!ids.length)html+='<p class="mute">لا توجد أوردرات مسلّمة بانتظار التحصيل.</p>';
+    ids.forEach(function(id){
+      var g=by[id],pend=g.rows.filter(function(o){return o.cash_status!=="received"}).reduce(function(a,o){return a+Number(o.total)},0);
+      html+='<h2 style="font-size:15px;margin:14px 0 6px">'+esc(g.name)+' — المتبقي: '+Math.round(pend*100)/100+' ج.م</h2>'+g.rows.map(cashOrderRow).join('');
+    });
     if(ROLE==="admin"){
-      html+='<h2 style="font-size:15px;margin:14px 0 6px">توريدات من المدير المالي بانتظار التأكيد ('+pd.finance_handovers.length+')</h2>'+
-        (pd.finance_handovers.length?pd.finance_handovers.map(function(e){return '<div class="card"><b>'+esc(e.from_name)+'</b> — '+e.amount+' ج.م<br><span class="mute">أُبلغ بالتوريد: '+dt(e.reported_at)+'</span><br><button class="big" style="margin-top:8px" data-cashconf="'+e.id+'">✅ تأكيد الاستلام</button></div>'}).join(''):'<p class="mute">لا يوجد توريدات بانتظار التأكيد.</p>')+
-        '<h2 style="font-size:15px;margin:14px 0 6px">المستحق على المناديب حالياً</h2>'+
-        (ov.couriers.length?ov.couriers.map(function(c){return '<div class="card row"><div><b>'+esc(c.name)+'</b><br><span class="mute">تسوية '+(SMN[c.settlement_mode]||SMN.per_order)+'</span></div><b style="color:'+(c.owed>0?'var(--t)':'inherit')+'">'+c.owed+' ج.م</b></div>'}).join(''):'<p class="mute">لا يوجد مناديب نشطون.</p>');
+      html+='<h2 style="font-size:15px;margin:18px 0 6px">توريدات من المدير المالي بانتظار تأكيدك ('+pd.finance_handovers.length+')</h2>'+
+        (pd.finance_handovers.length?pd.finance_handovers.map(function(e){return '<div class="card"><b>'+esc(e.from_name)+'</b> — '+e.amount+' ج.م<br><span class="mute">أُبلغ بالتوريد: '+dt(e.reported_at)+'</span><br><button class="big" style="margin-top:8px" data-cashconf="'+e.id+'">✅ تأكيد الاستلام</button></div>'}).join(''):'<p class="mute">لا يوجد توريدات بانتظار التأكيد.</p>');
     }
     el.innerHTML=html;
   }
+}
+
+/* ---------- courier management page (admin or delegate) ---------- */
+var CR=null;
+function crLoad(){apiCall("GET","/couriers").then(function(r){CR=(r&&r.couriers)?r:null;crV()}).catch(function(){})}
+function crColSel(id,cur,cols){
+  return '<select data-crcol="'+id+'">'+'<option value="">— أي مدير مالي —</option>'+cols.map(function(c){return '<option value="'+c.id+'"'+(c.id===cur?' selected':'')+'>'+esc(c.name)+' ('+(c.role==="finance"?"مدير مالي":"إدارة")+')</option>'}).join('')+'</select>';
+}
+function crV(){
+  var el=$("couriers");if(!el)return;
+  if(!CR){el.innerHTML='<h1 style="font-size:19px">🛵 الدليفرية</h1><p class="mute">جارِ التحميل...</p>';return}
+  var html='<h1 style="font-size:19px">🛵 إدارة الدليفرية</h1>';
+  html+=CR.couriers.length?CR.couriers.map(function(c){
+    return '<div class="card"><b>'+esc(c.name)+'</b> · <span class="mute">'+esc(c.phone)+(c.active?'':' · موقوف')+'</span><br>'+
+      '<span class="mute">المستحق عليه: '+c.owed+' ج.م</span>'+
+      '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل منه</label>'+
+      '<select data-crmode="'+c.id+'">'+['per_order','daily','weekly','suspended'].map(function(k){return '<option value="'+k+'"'+(c.settlement_mode===k?' selected':'')+'>'+({per_order:"أوردر بأوردر",daily:"يوم بيوم",weekly:"أسبوع بأسبوع",suspended:"إيقاف التعامل"})[k]+'</option>'}).join('')+'</select>'+
+      '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+'</div>';
+  }).join(''):'<p class="mute">لا يوجد دليفرية بعد.</p>';
+  html+='<div class="card"><h2>إضافة دليفري جديد</h2>'+
+    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crW" type="password" placeholder="كلمة السر (6 أحرف على الأقل)">'+
+    '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل</label>'+
+    '<select id="crM"><option value="per_order">أوردر بأوردر</option><option value="daily">يوم بيوم</option><option value="weekly">أسبوع بأسبوع</option><option value="suspended">إيقاف التعامل</option></select>'+
+    '<label class="mute" style="display:block;margin-top:8px">المحصِّل (الافتراضي: المدير المالي)</label>'+crColSel("new",null,CR.collectors).replace('data-crcol="new"','id="crC"')+
+    '<button class="big" id="crAdd">إضافة</button><p id="crErr" style="color:var(--t)"></p></div>';
+  if(CR.delegates){
+    html+='<h2 style="font-size:15px;margin:18px 0 6px">تفويض صلاحية إدارة الدليفرية</h2><p class="mute">أنت (المدير) صاحب الصلاحية، ويمكنك تفويضها لموظف. الافتراضي: المدير المالي.</p>'+
+      (CR.delegates.length?CR.delegates.map(function(d){return '<div class="card row"><div><b>'+esc(d.name)+'</b> <span class="mute">'+RN[d.role]+'</span></div><button class="chip" style="color:var(--t)" data-crdel="'+d.id+':0">سحب الصلاحية</button></div>'}).join(''):'<p class="mute">لا يوجد مفوَّضون.</p>');
+    var avail=(CR.delegate_candidates||[]).filter(function(c){return !CR.delegates.some(function(d){return d.id===c.id})&&(c.role==="finance"||c.role==="prep")});
+    if(avail.length)html+='<div class="card"><select id="crDelSel">'+avail.map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+' ('+RN[c.role]+')</option>'}).join('')+'</select><button class="big" id="crDelAdd">تفويض</button></div>';
+  }
+  el.innerHTML=html;
 }
 
 /* ---------- categories (admin only) ---------- */
@@ -507,6 +551,13 @@ function startApp(){
   $("authScreen").style.display="none";$("app").style.display="block";
   $("hi").textContent="أهلاً "+(MYNAME||"")+" 👋";
   buildNav();
+  if(ROLE==="finance"||ROLE==="prep"){
+    apiCall("GET","/couriers/can-manage").then(function(r){
+      if(r&&r.can&&!NAV[ROLE].some(function(x){return x[0]==="couriers"})){
+        NAV[ROLE].push(["couriers","🛵","الدليفرية"]);buildNav();
+      }
+    }).catch(function(){});
+  }
   var first=(NAV[ROLE]||[["store"]])[0][0];
   go(first);
   if(ROLE==="admin")setupPush();
@@ -538,6 +589,12 @@ function setupPush(){
     if(sub)apiCall("POST","/push/subscribe",{subscription:sub.toJSON?sub.toJSON():sub}).catch(function(e){console.error("push subscribe api call failed",e)});
   }).catch(function(e){console.error("setupPush failed",e)});
 }
+document.addEventListener("change",function(e){
+  var t=e.target;
+  if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
+  if(t.dataset&&t.dataset.crmode){apiCall("PATCH","/couriers/"+t.dataset.crmode,{settlement_mode:t.value}).then(function(r){if(r&&r.ok){toast("تم حفظ طريقة التحصيل");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")});return}
+  if(t.dataset&&t.dataset.crcol){apiCall("PATCH","/couriers/"+t.dataset.crcol,{collector_id:t.value||null}).then(function(r){if(r&&r.ok){toast("تم تغيير المحصِّل");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")});return}
+});
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.dataset.t){go(t.dataset.t);return}
@@ -609,14 +666,22 @@ document.addEventListener("click",function(e){
     return;
   }
 
-  if(t.id==="cashSettle"){
-    t.disabled=true;
-    apiCall("POST","/cash/courier-settle",{}).then(function(r){
-      t.disabled=false;
-      if(r&&r.ok){toast("تم تسجيل التسديد، في انتظار التأكيد");cashLoad()}else{toast((r&&r.message)||"تعذّر التنفيذ")}
+  if(t.id==="cashRecv"||t.id==="cashNotRecv"){
+    var ids=Object.keys(CASH.sel).filter(function(k){return CASH.sel[k]}).map(Number);
+    if(!ids.length)return;t.disabled=true;
+    apiCall("PATCH","/cash/orders/decide",{order_ids:ids,status:t.id==="cashRecv"?"received":"not_received"}).then(function(r){
+      if(r&&r.ok){CASH.sel={};toast(t.id==="cashRecv"?"تم تسجيل الاستلام":"تم تسجيل عدم الاستلام");cashLoad()}else{t.disabled=false;toast((r&&r.message)||"تعذّر الحفظ")}
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالسيرفر")});
     return;
   }
+  if(t.id==="crAdd"){
+    var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),password:$("crW").value,settlement_mode:$("crM").value,collector_id:$("crC").value||null};
+    t.disabled=true;
+    apiCall("POST","/couriers",cb).then(function(r){t.disabled=false;if(r&&r.ok){toast("تمت إضافة الدليفري");crLoad()}else{$("crErr").textContent=(r&&r.message)||"تعذّرت الإضافة"}}).catch(function(){t.disabled=false});
+    return;
+  }
+  if(t.id==="crDelAdd"){apiCall("PUT","/couriers/delegates/"+$("crDelSel").value,{grant:true}).then(function(r){if(r&&r.ok){toast("تم التفويض");crLoad()}else toast("تعذّر التفويض")});return}
+  if(t.dataset.crdel){apiCall("PUT","/couriers/delegates/"+t.dataset.crdel.split(":")[0],{grant:false}).then(function(r){if(r&&r.ok){toast("تم سحب الصلاحية");crLoad()}});return}
   if(t.id==="cashHandover"){
     t.disabled=true;
     apiCall("POST","/cash/finance-handover",{}).then(function(r){

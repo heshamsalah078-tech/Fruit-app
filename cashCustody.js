@@ -19,6 +19,20 @@ function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100
 function init({ pool, requireAuth, express }) {
   const router = express.Router();
 
+
+  // ---------- courier management permission: admin always, or a delegate the admin chose ----------
+  async function canManageCouriers(user) {
+    if (user.role === 'admin') return true;
+    const r = await pool.query('SELECT 1 FROM courier_mgmt_delegates WHERE staff_id=$1', [user.id]);
+    return r.rows.length > 0;
+  }
+  function needManage(req, res, next) {
+    canManageCouriers(req.user).then((ok) => {
+      if (!ok) return res.status(403).json({ error: 'forbidden', message: 'ليس لديك صلاحية إدارة الدليفرية.' });
+      next();
+    }).catch(() => res.status(500).json({ error: 'failed' }));
+  }
+
   // ---------- core balance queries ----------
 
   // Sum of delivered-but-not-yet-settled orders for one courier.
@@ -49,6 +63,7 @@ function init({ pool, requireAuth, express }) {
   async function canTakeDelivery(db, staffId) {
     const s = await db.query('SELECT settlement_mode FROM staff WHERE id=$1', [staffId]);
     const mode = s.rows[0] && s.rows[0].settlement_mode;
+    if (mode === 'suspended') return { ok: false, reason: 'suspended', amount: 0 };
     if (mode !== 'per_order') return { ok: true };
     const owed = await courierOwed(db, staffId);
     if (owed.amount > 0) {
@@ -173,6 +188,168 @@ function init({ pool, requireAuth, express }) {
       my_custody: myCustody,
       couriers: couriers.rows.map(c => ({ id: c.id, name: c.name, settlement_mode: c.settlement_mode, owed: round2(c.owed) }))
     });
+  });
+
+
+  // ---------- per-order collection (the collector decides: received / not received) ----------
+
+  // Delivered orders for couriers this person collects from (admin sees all). Grouped client-side.
+  router.get('/cash/orders', requireAuth('finance', 'admin'), async (req, res) => {
+    try {
+      const where = req.user.role === 'admin' ? '' : 'AND (s.collector_id = $1 OR s.collector_id IS NULL)';
+      const params = req.user.role === 'admin' ? [] : [req.user.id];
+      const r = await pool.query(
+        `SELECT o.id, o.total, o.cash_status, o.cash_decided_at, o.delivered_at, o.created_at,
+                s.id AS courier_id, s.name AS courier_name, s.settlement_mode,
+                d.name AS decided_by_name
+           FROM orders o JOIN staff s ON s.id = o.delivery_staff_id
+           LEFT JOIN staff d ON d.id = o.cash_decided_by
+          WHERE o.status='delivered' ${where}
+            AND (o.cash_status='pending' OR o.cash_status='not_received' OR o.cash_decided_at > now() - interval '7 days')
+          ORDER BY o.id DESC LIMIT 500`, params
+      );
+      res.json({ orders: r.rows });
+    } catch (e) {
+      console.error('cash/orders failed', e.message);
+      res.status(500).json({ error: 'failed' });
+    }
+  });
+
+  // The collector marks specific orders received / not received. Identity comes from the session.
+  router.patch('/cash/orders/decide', requireAuth('finance', 'admin'), async (req, res) => {
+    const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids.map(Number).filter(Number.isInteger) : [];
+    const status = req.body.status;
+    if (!ids.length || !['received', 'not_received'].includes(status)) {
+      return res.status(400).json({ error: 'invalid', message: 'بيانات غير صحيحة.' });
+    }
+    try {
+      const scope = req.user.role === 'admin' ? '' :
+        'AND delivery_staff_id IN (SELECT id FROM staff WHERE collector_id = $4 OR collector_id IS NULL)';
+      const params = [ids, status, req.user.id].concat(req.user.role === 'admin' ? [] : [req.user.id]);
+      const r = await pool.query(
+        `UPDATE orders SET cash_status=$2, cash_decided_by=$3, cash_decided_at=now(),
+                cash_settled = ($2 = 'received')
+          WHERE id = ANY($1::int[]) AND status='delivered' ${scope} RETURNING id, total`, params
+      );
+      if (status === 'received' && r.rows.length) {
+        // record the money as now in this person's custody (one ledger row per courier)
+        const byC = await pool.query(
+          `SELECT delivery_staff_id AS cid, SUM(total)::numeric AS amt, array_agg(id) AS oids
+             FROM orders WHERE id = ANY($1::int[]) GROUP BY delivery_staff_id`, [r.rows.map((x) => x.id)]
+        );
+        for (const g of byC.rows) {
+          await pool.query(
+            `INSERT INTO cash_custody_events (kind, from_staff_id, to_staff_id, amount, order_ids, status, confirmed_by, confirmed_at)
+             VALUES ('courier_settlement',$1,$2,$3,$4,'confirmed',$2,now())`,
+            [g.cid, req.user.id, g.amt, g.oids]
+          );
+        }
+      }
+      res.json({ ok: true, updated: r.rows.length });
+    } catch (e) {
+      console.error('cash/decide failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' });
+    }
+  });
+
+  // ---------- courier management page (admin or delegate) ----------
+
+  router.get('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+    const couriers = await pool.query(
+      `SELECT s.id, s.name, s.phone, s.active, s.settlement_mode, s.collector_id, c.name AS collector_name,
+              COALESCE((SELECT SUM(total) FROM orders o WHERE o.delivery_staff_id=s.id AND o.status='delivered' AND o.cash_settled=false),0)::numeric AS owed
+         FROM staff s LEFT JOIN staff c ON c.id = s.collector_id
+        WHERE s.role='delivery' ORDER BY s.id`
+    );
+    const collectors = await pool.query(`SELECT id, name, role FROM staff WHERE role IN ('finance','admin') AND active=true ORDER BY role DESC, name`);
+    const out = { couriers: couriers.rows.map((c) => ({ ...c, owed: round2(c.owed) })), collectors: collectors.rows };
+    if (req.user.role === 'admin') {
+      const d = await pool.query(
+        `SELECT s.id, s.name, s.role FROM courier_mgmt_delegates g JOIN staff s ON s.id = g.staff_id ORDER BY s.name`
+      );
+      const cand = await pool.query(`SELECT id, name, role FROM staff WHERE role <> 'admin' AND role <> 'delivery' AND active=true ORDER BY role DESC, name`);
+      out.delegates = d.rows; out.delegate_candidates = cand.rows;
+    }
+    res.json(out);
+  });
+
+  router.post('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+    const bcrypt = require('bcryptjs');
+    const { name, phone, password, settlement_mode, collector_id } = req.body;
+    if (!name || !phone || !password || String(password).length < 6) {
+      return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
+    }
+    const mode = ['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode) ? settlement_mode : 'per_order';
+    try {
+      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
+      if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
+      let col = collector_id ? Number(collector_id) : null;
+      if (!col) { // default collector: a finance staff member
+        const f = await pool.query(`SELECT id FROM staff WHERE role='finance' AND active=true ORDER BY id LIMIT 1`);
+        col = f.rows[0] ? f.rows[0].id : null;
+      }
+      const hash = await bcrypt.hash(password, 10);
+      const r = await pool.query(
+        `INSERT INTO staff (name, phone, password_hash, role, settlement_mode, collector_id)
+         VALUES ($1,$2,$3,'delivery',$4,$5) RETURNING id, name, phone, settlement_mode, collector_id`,
+        [name, phone, hash, mode, col]
+      );
+      res.json({ ok: true, courier: r.rows[0] });
+    } catch (e) {
+      console.error('add courier failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّرت الإضافة.' });
+    }
+  });
+
+  router.patch('/couriers/:id', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+    const { settlement_mode, collector_id, active } = req.body;
+    try {
+      const t = await pool.query(`SELECT id FROM staff WHERE id=$1 AND role='delivery'`, [req.params.id]);
+      if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
+      if (settlement_mode !== undefined) {
+        if (!['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) return res.status(400).json({ error: 'invalid_mode' });
+        await pool.query('UPDATE staff SET settlement_mode=$1 WHERE id=$2', [settlement_mode, req.params.id]);
+      }
+      if (collector_id !== undefined) {
+        const c = collector_id ? Number(collector_id) : null;
+        if (c) {
+          const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role IN ('finance','admin') AND active=true`, [c]);
+          if (!ok.rows.length) return res.status(400).json({ error: 'invalid_collector' });
+        }
+        await pool.query('UPDATE staff SET collector_id=$1 WHERE id=$2', [c, req.params.id]);
+      }
+      if (typeof active === 'boolean') await pool.query('UPDATE staff SET active=$1 WHERE id=$2', [active, req.params.id]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('patch courier failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' });
+    }
+  });
+
+  // Delegation is the admin's alone: grant / revoke courier-management to a staff member.
+  router.put('/couriers/delegates/:staffId', requireAuth('admin'), async (req, res) => {
+    const grant = req.body.grant !== false;
+    try {
+      if (grant) {
+        const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role IN ('finance','prep') AND active=true`, [req.params.staffId]);
+        if (!ok.rows.length) return res.status(400).json({ error: 'invalid_staff' });
+        await pool.query(
+          'INSERT INTO courier_mgmt_delegates (staff_id, granted_by) VALUES ($1,$2) ON CONFLICT (staff_id) DO NOTHING',
+          [req.params.staffId, req.user.id]
+        );
+      } else {
+        await pool.query('DELETE FROM courier_mgmt_delegates WHERE staff_id=$1', [req.params.staffId]);
+      }
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('delegate failed', e.message);
+      res.status(500).json({ error: 'failed' });
+    }
+  });
+
+  // Lets the UI know whether to show the "الدليفرية" tab to this user.
+  router.get('/couriers/can-manage', requireAuth('admin', 'finance', 'prep', 'delivery'), async (req, res) => {
+    res.json({ can: await canManageCouriers(req.user) });
   });
 
   return { router, canTakeDelivery, courierOwed, custodyBalance };

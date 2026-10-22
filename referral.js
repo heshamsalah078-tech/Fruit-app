@@ -198,9 +198,9 @@ function init({ pool, requireAuth, jwt, JWT_SECRET, express }) {
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        `INSERT INTO referrals (referrer_id, referred_id, referred_address_norm, window_ends_at)
-         VALUES ($1,$2,$3, now() + ($4 || ' days')::interval) ON CONFLICT (referred_id) DO NOTHING RETURNING id`,
-        [referrer.id, customer.id, norm, String(s.window_days)]
+        `INSERT INTO referrals (referrer_id, referred_id, referred_address_norm, window_ends_at, sacrifice_pct, progressive_steps)
+         VALUES ($1,$2,$3, now() + ($4 || ' days')::interval, $5, $6) ON CONFLICT (referred_id) DO NOTHING RETURNING id`,
+        [referrer.id, customer.id, norm, String(s.window_days), s.sacrifice_pct, JSON.stringify(s.progressive_steps)]
       );
       if (!ins.rows.length) { await client.query('ROLLBACK'); return { ok: false, reason: 'already_referred' }; }
       await client.query(
@@ -222,7 +222,7 @@ function init({ pool, requireAuth, jwt, JWT_SECRET, express }) {
   // this is an intentional business decision left entirely to the admin, not something this code limits.
   async function computeDiscount(db, customerId, items) {
     const ents = (await db.query(
-      `SELECT e.id, e.category FROM referral_entitlements e JOIN referrals r ON r.id = e.referral_id
+      `SELECT e.id, e.category, r.sacrifice_pct, r.progressive_steps FROM referral_entitlements e JOIN referrals r ON r.id = e.referral_id
         WHERE e.customer_id=$1 AND e.category IS NOT NULL AND r.window_ends_at > now()`, [customerId]
     )).rows;
     if (!ents.length) return { discount: 0, lines: [] };
@@ -237,11 +237,11 @@ function init({ pool, requireAuth, jwt, JWT_SECRET, express }) {
       const used = (await db.query(
         'SELECT COUNT(DISTINCT order_id)::int AS n FROM referral_reward_log WHERE entitlement_id=$1', [e.id]
       )).rows[0].n;
-      const mult = stepMultiplier(s.progressive_steps, used);
+      const mult = stepMultiplier(e.progressive_steps || s.progressive_steps, used);
       let lineSum = 0;
       for (const it of items) if (catOf[it.product_id] === e.category) lineSum += Number(it.quantity) * Number(it.unit_price);
       if (!lineSum) continue;
-      const amt = round2(lineSum * (s.sacrifice_pct / 100) * mult);
+      const amt = round2(lineSum * (Number(e.sacrifice_pct ?? s.sacrifice_pct) / 100) * mult);
       if (amt > 0) lines.push({ entitlement_id: e.id, category: e.category, line_total: round2(lineSum), discount_amount: amt });
     }
     return { discount: round2(lines.reduce((a, l) => a + l.discount_amount, 0)), lines };
@@ -290,7 +290,13 @@ function init({ pool, requireAuth, jwt, JWT_SECRET, express }) {
     const ref = await referrerByCode(req.params.code);
     if (!ref) return res.json({ valid: false });
     pool.query('INSERT INTO referral_opens (referrer_id) VALUES ($1)', [ref.id]).catch(() => {});
-    res.json({ valid: true, referrer_name: String(ref.name || '').split(' ')[0] });
+    const st = await getSettings();
+    res.json({
+      valid: true,
+      referrer_name: String(ref.name || '').split(' ')[0],
+      sacrifice_pct: st.sacrifice_pct,
+      progressive_steps: st.progressive_steps,
+    });
   });
 
   // ----- customer: my referral dashboard -----
