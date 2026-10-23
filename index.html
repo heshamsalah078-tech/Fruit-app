@@ -258,7 +258,7 @@ function complaintCard(){
     '<p id="cpxErr" style="color:var(--t)"></p></div>';
 }
 var DB={customers:[],orders:[]}; // simulated database tables
-var API=location.hostname.indexOf("railway.app")>-1?"":"https://fruit-app-production.up.railway.app";
+var API=(location.protocol==="http:"||location.protocol==="https:")&&location.hostname.indexOf("claudeusercontent")<0?"":"https://fruit-app-production.up.railway.app";
 var TOK="",ROLE="";try{TOK=localStorage.getItem("sf_tok")||"";ROLE=localStorage.getItem("sf_role")||""}catch(x){}
 function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){logout();}return r.json()})}
 function dbSaveCustomer(c){}

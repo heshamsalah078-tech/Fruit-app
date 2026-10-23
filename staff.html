@@ -112,7 +112,7 @@ html[data-boot="app"] #app{display:block!important}
 
 <script>
 function $(id){return document.getElementById(id)}
-var API="https://fruit-app-production.up.railway.app";
+var API=(location.protocol==="http:"||location.protocol==="https:")&&location.hostname.indexOf("claudeusercontent")<0?"":"https://fruit-app-production.up.railway.app";
 var swReady=("serviceWorker" in navigator)?navigator.serviceWorker.register("/sw.js").catch(function(e){console.error("sw register failed",e);return null}):Promise.resolve(null);
 // Session is kept in memory only (not localStorage) so the app always asks to log in again each time it is opened.
 var TOK="",ROLE="",MYID=0,MYNAME="";
