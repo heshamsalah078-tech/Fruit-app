@@ -256,7 +256,10 @@ function init({ pool, requireAuth, express }) {
 
   router.get('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
     const couriers = await pool.query(
-      `SELECT s.id, s.name, s.phone, s.active, s.settlement_mode, s.collector_id, c.name AS collector_name,
+      `SELECT s.id, s.name, s.phone, s.phone2, s.address, s.active, s.settlement_mode, s.collector_id, c.name AS collector_name,
+              (EXISTS (SELECT 1 FROM orders o2 WHERE o2.delivery_staff_id=s.id)
+               OR EXISTS (SELECT 1 FROM cash_custody_events e WHERE e.from_staff_id=s.id OR e.to_staff_id=s.id OR e.confirmed_by=s.id)
+               OR EXISTS (SELECT 1 FROM orders o3 WHERE o3.cash_decided_by=s.id)) AS has_history,
               COALESCE((SELECT SUM(total) FROM orders o WHERE o.delivery_staff_id=s.id AND o.status='delivered' AND o.cash_settled=false),0)::numeric AS owed
          FROM staff s LEFT JOIN staff c ON c.id = s.collector_id
         WHERE s.role='delivery' ORDER BY s.id`
@@ -275,7 +278,7 @@ function init({ pool, requireAuth, express }) {
 
   router.post('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
     const bcrypt = require('bcryptjs');
-    const { name, phone, password, settlement_mode, collector_id } = req.body;
+    const { name, phone, phone2, address, password, settlement_mode, collector_id } = req.body;
     if (!name || !phone || !password || String(password).length < 6) {
       return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
     }
@@ -290,9 +293,9 @@ function init({ pool, requireAuth, express }) {
       }
       const hash = await bcrypt.hash(password, 10);
       const r = await pool.query(
-        `INSERT INTO staff (name, phone, password_hash, role, settlement_mode, collector_id)
-         VALUES ($1,$2,$3,'delivery',$4,$5) RETURNING id, name, phone, settlement_mode, collector_id`,
-        [name, phone, hash, mode, col]
+        `INSERT INTO staff (name, phone, phone2, address, password_hash, role, settlement_mode, collector_id)
+         VALUES ($1,$2,$3,$4,$5,'delivery',$6,$7) RETURNING id, name, phone, phone2, address, settlement_mode, collector_id`,
+        [name, phone, phone2 || null, address || null, hash, mode, col]
       );
       res.json({ ok: true, courier: r.rows[0] });
     } catch (e) {
@@ -302,10 +305,27 @@ function init({ pool, requireAuth, express }) {
   });
 
   router.patch('/couriers/:id', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
-    const { settlement_mode, collector_id, active } = req.body;
+    const { settlement_mode, collector_id, active, name, phone, phone2, address } = req.body;
     try {
       const t = await pool.query(`SELECT id FROM staff WHERE id=$1 AND role='delivery'`, [req.params.id]);
       if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
+      if (name !== undefined || phone !== undefined || phone2 !== undefined || address !== undefined) {
+        if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'invalid', message: 'الاسم مطلوب.' });
+        if (phone !== undefined) {
+          if (!String(phone).trim()) return res.status(400).json({ error: 'invalid', message: 'رقم الموبايل مطلوب.' });
+          const dup = await pool.query('SELECT id FROM staff WHERE phone=$1 AND id<>$2', [String(phone).trim(), req.params.id]);
+          if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
+        }
+        await pool.query(
+          `UPDATE staff SET name=COALESCE($1,name), phone=COALESCE($2,phone),
+                  phone2=CASE WHEN $3::boolean THEN $4 ELSE phone2 END,
+                  address=CASE WHEN $5::boolean THEN $6 ELSE address END
+            WHERE id=$7`,
+          [name !== undefined ? String(name).trim() : null, phone !== undefined ? String(phone).trim() : null,
+           phone2 !== undefined, phone2 ? String(phone2).trim() : null,
+           address !== undefined, address ? String(address).trim() : null, req.params.id]
+        );
+      }
       if (settlement_mode !== undefined) {
         if (!['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) return res.status(400).json({ error: 'invalid_mode' });
         await pool.query('UPDATE staff SET settlement_mode=$1 WHERE id=$2', [settlement_mode, req.params.id]);
@@ -323,6 +343,31 @@ function init({ pool, requireAuth, express }) {
     } catch (e) {
       console.error('patch courier failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' });
+    }
+  });
+
+  // Delete a courier ONLY if he has no operating history at all (no orders, no cash events).
+  router.delete('/couriers/:id', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+    try {
+      const t = await pool.query(`SELECT id FROM staff WHERE id=$1 AND role='delivery'`, [req.params.id]);
+      if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
+      const h = await pool.query(
+        `SELECT (EXISTS (SELECT 1 FROM orders WHERE delivery_staff_id=$1 OR cash_decided_by=$1)
+              OR EXISTS (SELECT 1 FROM cash_custody_events WHERE from_staff_id=$1 OR to_staff_id=$1 OR confirmed_by=$1)
+              OR EXISTS (SELECT 1 FROM orders WHERE prep_staff_id=$1)
+              OR EXISTS (SELECT 1 FROM stock_movements WHERE staff_id=$1)
+              OR EXISTS (SELECT 1 FROM courier_mgmt_delegates WHERE granted_by=$1)) AS used`, [req.params.id]);
+      if (h.rows[0].used) {
+        return res.status(409).json({ error: 'has_history', message: 'لا يمكن حذف دليفري له تاريخ تشغيل. يمكنك إيقافه بدلاً من ذلك.' });
+      }
+      await pool.query('DELETE FROM push_subscriptions WHERE staff_id=$1', [req.params.id]);
+      await pool.query('DELETE FROM courier_mgmt_delegates WHERE staff_id=$1', [req.params.id]);
+      await pool.query('UPDATE staff SET collector_id=NULL WHERE collector_id=$1', [req.params.id]);
+      await pool.query('DELETE FROM staff WHERE id=$1', [req.params.id]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('delete courier failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر الحذف.' });
     }
   });
 
