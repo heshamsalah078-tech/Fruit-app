@@ -147,7 +147,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 </nav>
 
 <script>
-var CUR="ج.م",FEE=8;
+var CUR="ج.م",FEE=0,ZONES=[],ZONES_LOADED=false;
 var P=[
 {id:1,n:"طماطم",e:"🍅",p:6,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1561136594-7f68413baa99?w=300&q=80"},{id:2,n:"خيار",e:"🥒",p:5,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1604977042946-1eecc30f269e?w=300&q=80"},
 {id:3,n:"جزر",e:"🥕",p:4,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1598170845058-32b9d6a5da37?w=300&q=80"},{id:4,n:"بطاطس",e:"🥔",p:5,u:"كيلو",c:"خضار",img:"https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=300&q=80"},
@@ -155,7 +155,7 @@ var P=[
 {id:7,n:"برتقال",e:"🍊",p:7,u:"كيلو",c:"فواكه",img:"https://images.unsplash.com/photo-1582979512210-99b6a53386f9?w=300&q=80"},{id:8,n:"عنب",e:"🍇",p:15,u:"كيلو",c:"فواكه",img:"https://images.unsplash.com/photo-1599819177626-8a8f8e0d1b3a?w=300&q=80"},
 {id:9,n:"سبانخ",e:"🥬",p:3,u:"حزمة",c:"ورقيات",img:"https://images.unsplash.com/photo-1576045057995-568f588f82fb?w=300&q=80"},{id:10,n:"جرجير",e:"🌿",p:2,u:"حزمة",c:"ورقيات",img:"https://images.unsplash.com/photo-1551892589-865f69869476?w=300&q=80"}];
 var usedRefs=[],payErr="";
-var me={name:"",phone:"",addr:""},editing=false;
+var me={name:"",phone:"",addr:"",zone_id:0},editing=false;
 try{var sv=JSON.parse(localStorage.getItem("sf_me")||"null");if(sv&&sv.phone)me=sv}catch(x){}
 var incomingRef="";
 try{
@@ -206,9 +206,9 @@ function refWelcomeCard(){
     '<div class="gcPct">'+pct+'%</div><p class="gcSub" style="margin-bottom:0">'+sub+'</p></div>';
 }
 function acctV(){
-  if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
+  if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+(zoneById(me.zone_id)?' — '+esc(zoneById(me.zone_id).name):'')+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
   if(otpState){$("acct").innerHTML=otpCard();return}
-  $("acct").innerHTML=refWelcomeCard()+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'"><button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
+  $("acct").innerHTML=refWelcomeCard()+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'">'+zoneSelect("rZone",me.zone_id)+'<button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
 var cpxRecorder=null,cpxChunks=[],cpxBlob=null,cpxStream=null;
 function toggleComplaintRec(btn){
   if(cpxRecorder&&cpxRecorder.state==="recording"){
@@ -272,8 +272,10 @@ function syncCart(){
 }
 function dbSaveOrder(o,onOk,onFail){
   if(!me.id){if(onFail)onFail("سجّل بياناتك أولًا");return}
-  apiCall("POST","/orders",{customer_id:me.id,delivery_fee:o.fee,reward_discount:0,total:o.total,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
+  apiCall("POST","/orders",{customer_id:me.id,zone_id:me.zone_id||undefined,reward_discount:0,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
     if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;clearTimeout(_cartSyncT);apiCall("POST","/cart/sync",{items:{}}).catch(function(){});if(onOk)onOk(r)}
+    else if(r&&r.error==="out_of_area"){me.zone_id=0;saveMe();loadZones();if(onFail)onFail(r.message||"آسفين، منطقتك خارج نطاق التوصيل حالياً.")}
+    else if(r&&r.error==="zone_required"){if(onFail)onFail(r.message||"اختر منطقتك الأول.")}
     else{loadProducts();if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
@@ -354,8 +356,9 @@ function cartV(){
   var ids=P.filter(function(p){return cart[p.id]});
   if(!ids.length){$("cart").innerHTML='<div class="empty"><div style="font-size:56px">🧺</div>سلتك فارغة.<br>أضف منتجات من المتجر لتبدأ.</div>';return}
   var s=sub(),d=Math.min(estimateReferralDiscount(),s),tot=s+FEE-d;
+  syncFee();tot=s+FEE-d;
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
-  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل</span><span>'+money(FEE)+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div></div>':(otpState?otpCard():refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'"><button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>'))+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>')+'';
+  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل'+(zoneById(me.zone_id)?' ('+esc(zoneById(me.zone_id).name)+')':'')+'</span><span>'+(zoneById(me.zone_id)?money(FEE):'—')+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div>'+(zoneById(me.zone_id)?'':'<p style="color:var(--t);font-weight:700;margin:8px 0 4px">اختر منطقتك عشان نحسب التوصيل:</p>'+zoneSelect("ckZone2",0)+'<button class="chip" id="ckZoneSave" style="width:100%">حفظ المنطقة</button>')+'</div>':(otpState?otpCard():refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'">'+zoneSelect("ckZone",0)+'<button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>'))+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':(me.phone&&!zoneById(me.zone_id)?'<p class="mute" style="margin:10px 0 0">اختر منطقتك الأول عشان تقدر تأكّد الطلب.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>'))+'';
 }
 function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
 function timesFor(o){
@@ -555,10 +558,11 @@ document.addEventListener("click",function(e){
       editingP=null;draw()
     }}
   else if(t.id==="reg"){
-    var n1=$("rName").value.trim(),p1=$("rPhone").value.trim(),a1=$("rAddr").value.trim();
+    var n1=$("rName").value.trim(),p1=$("rPhone").value.trim(),a1=$("rAddr").value.trim(),z1=Number(($("rZone")||{}).value)||0;
     if(!n1||p1.replace(/\D/g,"").length<10||!a1){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
+    if(!z1){toast("اختر منطقتك من القايمة");return}
     t.disabled=true;
-    identifyCustomer(n1,p1,a1,function(){t.disabled=false;editing=false;toast("تم الحفظ، أهلاً "+n1);go("shop")},function(msg){t.disabled=false;toast(msg)});
+    identifyCustomer(n1,p1,a1,function(){t.disabled=false;editing=false;toast("تم الحفظ، أهلاً "+n1);go("shop")},function(msg){t.disabled=false;toast(msg)},z1);
   }
   else if(t.id==="editme"){editing=true;draw()}
   else if(t.id==="otpConfirm"){
@@ -570,7 +574,7 @@ document.addEventListener("click",function(e){
       t.disabled=false;
       if(r&&r.verified&&r.verification_token){
         var st=otpState;otpState=null;
-        finishIdentify(st.name,st.phone,st.addr,r.verification_token,st.onOk,st.onFail);
+        finishIdentify(st.name,st.phone,st.addr,r.verification_token,st.onOk,st.onFail,st.zoneId);
       }else{toast((r&&r.message)||"الكود غير صحيح")}
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
   }
@@ -584,10 +588,17 @@ document.addEventListener("click",function(e){
   }
   else if(t.id==="otpCancel"){otpState=null;draw()}
   else if(t.id==="ckReg"){
-    var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim();
+    var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim(),z2=Number(($("ckZone")||{}).value)||0;
     if(!n2||p2.replace(/\D/g,"").length<10||!a2){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
+    if(!z2){toast("اختر منطقتك من القايمة");return}
     t.disabled=true;
-    identifyCustomer(n2,p2,a2,function(){t.disabled=false;toast("تم حفظ بياناتك");draw()},function(msg){t.disabled=false;toast(msg)});
+    identifyCustomer(n2,p2,a2,function(){t.disabled=false;toast("تم حفظ بياناتك");draw()},function(msg){t.disabled=false;toast(msg)},z2);
+  }
+  else if(t.id==="ckZoneSave"){
+    var z3=Number(($("ckZone2")||{}).value)||0;
+    if(!z3){toast("اختر منطقتك من القايمة");return}
+    t.disabled=true;
+    identifyCustomer(me.name,me.phone,me.addr,function(){t.disabled=false;toast("تم حفظ المنطقة");draw()},function(msg){t.disabled=false;toast(msg)},z3);
   }
   else if(t.id==="cpxRec"){toggleComplaintRec(t)}
   else if(t.id==="cpxSend"){sendComplaint(t)}
@@ -625,13 +636,13 @@ function otpCard(){
     '<button class="chip" id="otpResend" style="width:100%;margin-top:8px">إعادة إرسال الكود</button>'+
     '<button class="chip" id="otpCancel" style="width:100%;margin-top:8px;background:transparent">رجوع</button></div>';
 }
-function startOtp(name,phone,addr,onOk,onFail){
+function startOtp(name,phone,addr,onOk,onFail,zoneId){
   apiCall("POST","/auth/otp/send",{phone:phone,referral_code:incomingRef||undefined}).then(function(r){
     if(r&&r.needed===false){ // already verified before, no OTP needed now
-      finishIdentify(name,phone,addr,null,onOk,onFail);return;
+      finishIdentify(name,phone,addr,null,onOk,onFail,zoneId);return;
     }
     if(r&&r.sent){
-      otpState={name:name,phone:phone,addr:addr,onOk:onOk,onFail:onFail};draw();
+      otpState={name:name,phone:phone,addr:addr,onOk:onOk,onFail:onFail,zoneId:zoneId};draw();
     }else{
       if(onFail)onFail((r&&r.message)||"تعذّر إرسال كود التحقق");
     }
@@ -646,10 +657,26 @@ function referralRejectMsg(reason){
   };
   return map[reason]||null;
 }
-function finishIdentify(name,phone,addr,verification_token,onOk,onFail){
-  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr,referral_code:incomingRef||undefined,verification_token:verification_token||undefined}).then(function(r){
+
+/* ---------- delivery zones: the customer picks a zone, the SERVER computes the fee ---------- */
+function zoneById(id){id=Number(id);return ZONES.find(function(z){return z.id===id})||null}
+function syncFee(){var z=me&&me.zone_id?zoneById(me.zone_id):null;FEE=z?z.fee:0}
+function loadZones(){
+  apiCall("GET","/zones").then(function(r){
+    ZONES=(r&&r.zones)?r.zones:[];ZONES_LOADED=true;
+    if(me&&me.zone_id&&!zoneById(me.zone_id))me.zone_id=0;   // my zone was switched off: ask again
+    syncFee();draw()
+  }).catch(function(){ZONES_LOADED=true;draw()})
+}
+function zoneSelect(id,cur){
+  if(!ZONES_LOADED)return '<p class="mute" style="margin:0 0 8px">جارٍ تحميل المناطق...</p>';
+  if(!ZONES.length)return '<p class="mute" style="margin:0 0 8px">التوصيل غير متاح حالياً.</p>';
+  return '<select id="'+id+'" style="'+INP+'"><option value="">— اختر منطقتك —</option>'+ZONES.map(function(z){return '<option value="'+z.id+'"'+(Number(cur)===z.id?' selected':'')+'>'+esc(z.name)+' — توصيل '+money(z.fee)+'</option>'}).join("")+'</select>';
+}
+function finishIdentify(name,phone,addr,verification_token,onOk,onFail,zoneId){
+  apiCall("POST","/auth/customer-identify",{name:name,phone:phone,address:addr,zone_id:zoneId||undefined,referral_code:incomingRef||undefined,verification_token:verification_token||undefined}).then(function(r){
     if(r&&r.token){
-      TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address};
+      TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address,zone_id:r.customer.zone_id||0};syncFee();
       try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe();localStorage.removeItem("sf_ref")}catch(x){}
       incomingRef="";refWelcome=null;
       hello();loadReferral(true);if(onOk)onOk();
@@ -658,21 +685,21 @@ function finishIdentify(name,phone,addr,verification_token,onOk,onFail){
         if(m)setTimeout(function(){toast(m)},1700)
       }
     }else if(r&&r.error==="otp_required"){
-      startOtp(name,phone,addr,onOk,onFail);
+      startOtp(name,phone,addr,onOk,onFail,zoneId);
     }else{if(onFail)onFail((r&&r.message)||"تعذّر حفظ بياناتك")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
 // Called once we have name+phone+address (collected inline at checkout or in the account tab).
 // No password: customers are identified purely by phone number. Transparently handles OTP if the
 // admin has turned phone verification on — otherwise this behaves exactly as before.
-function identifyCustomer(name,phone,addr,onOk,onFail){
-  finishIdentify(name,phone,addr,null,onOk,onFail);
+function identifyCustomer(name,phone,addr,onOk,onFail,zoneId){
+  finishIdentify(name,phone,addr,null,onOk,onFail,zoneId);
 }
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.id==="lo"){logout()}
 });
-startApp();
+startApp();loadZones();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 
 (function(){

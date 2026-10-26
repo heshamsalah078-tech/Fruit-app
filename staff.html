@@ -263,25 +263,14 @@ function crV(){
   if(!CR){el.innerHTML='<h1 style="font-size:19px">🛵 الدليفرية</h1><p class="mute">جارِ التحميل...</p>';return}
   var html='<h1 style="font-size:19px">🛵 إدارة الدليفرية</h1>';
   html+=CR.couriers.length?CR.couriers.map(function(c){
-    return '<div class="card"><b>'+esc(c.name)+'</b> · <span class="mute">'+esc(c.phone)+(c.phone2?' · '+esc(c.phone2):'')+(c.active?'':' · موقوف')+'</span><br>'+
-      (c.address?'<span class="mute">📍 '+esc(c.address)+'</span><br>':'')+
+    return '<div class="card"><b>'+esc(c.name)+'</b> · <span class="mute">'+esc(c.phone)+(c.active?'':' · موقوف')+'</span><br>'+
       '<span class="mute">المستحق عليه: '+c.owed+' ج.م</span>'+
-      '<details style="margin-top:8px"><summary class="mute" style="cursor:pointer">✏️ تعديل البيانات</summary>'+
-      '<input id="ce_n_'+c.id+'" placeholder="الاسم" value="'+esc(c.name)+'">'+
-      '<input id="ce_p_'+c.id+'" placeholder="رقم الموبايل" inputmode="tel" value="'+esc(c.phone)+'">'+
-      '<input id="ce_p2_'+c.id+'" placeholder="رقم موبايل بديل" inputmode="tel" value="'+esc(c.phone2||"")+'">'+
-      '<input id="ce_a_'+c.id+'" placeholder="العنوان" value="'+esc(c.address||"")+'">'+
-      '<button class="big" data-cesave="'+c.id+'">حفظ التعديلات</button></details>'+
       '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل منه</label>'+
       '<select data-crmode="'+c.id+'">'+['per_order','daily','weekly','suspended'].map(function(k){return '<option value="'+k+'"'+(c.settlement_mode===k?' selected':'')+'>'+({per_order:"أوردر بأوردر",daily:"يوم بيوم",weekly:"أسبوع بأسبوع",suspended:"إيقاف التعامل"})[k]+'</option>'}).join('')+'</select>'+
-      '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+
-      (c.has_history
-        ?'<button class="chip" style="margin-top:10px;color:var(--t)" data-crtoggle="'+c.id+':'+(c.active?'0':'1')+'">'+(c.active?'⏸ إيقاف الدليفري':'▶️ إعادة تفعيل')+'</button><p class="mute" style="font-size:12px">لا يمكن حذفه لأن له تاريخ تشغيل (يمكن إيقافه فقط).</p>'
-        :'<button class="chip" style="margin-top:10px;color:var(--t)" data-crdelete="'+c.id+'">🗑 حذف الدليفري</button>')+
-      '</div>';
+      '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+'</div>';
   }).join(''):'<p class="mute">لا يوجد دليفرية بعد.</p>';
   html+='<div class="card"><h2>إضافة دليفري جديد</h2>'+
-    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel"><input id="crA" placeholder="العنوان"><input id="crW" type="password" placeholder="كلمة السر (6 أحرف على الأقل)">'+
+    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crW" type="password" placeholder="كلمة السر (6 أحرف على الأقل)">'+
     '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل</label>'+
     '<select id="crM"><option value="per_order">أوردر بأوردر</option><option value="daily">يوم بيوم</option><option value="weekly">أسبوع بأسبوع</option><option value="suspended">إيقاف التعامل</option></select>'+
     '<label class="mute" style="display:block;margin-top:8px">المحصِّل (الافتراضي: المدير المالي)</label>'+crColSel("new",null,CR.collectors).replace('data-crcol="new"','id="crC"')+
@@ -686,26 +675,9 @@ document.addEventListener("click",function(e){
     return;
   }
   if(t.id==="crAdd"){
-    var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),phone2:$("crP2").value.trim(),address:$("crA").value.trim(),password:$("crW").value,settlement_mode:$("crM").value,collector_id:$("crC").value||null};
+    var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),password:$("crW").value,settlement_mode:$("crM").value,collector_id:$("crC").value||null};
     t.disabled=true;
     apiCall("POST","/couriers",cb).then(function(r){t.disabled=false;if(r&&r.ok){toast("تمت إضافة الدليفري");crLoad()}else{$("crErr").textContent=(r&&r.message)||"تعذّرت الإضافة"}}).catch(function(){t.disabled=false});
-    return;
-  }
-  if(t.dataset.cesave){
-    var cid=t.dataset.cesave;
-    var body={name:$("ce_n_"+cid).value.trim(),phone:$("ce_p_"+cid).value.trim(),phone2:$("ce_p2_"+cid).value.trim(),address:$("ce_a_"+cid).value.trim()};
-    t.disabled=true;
-    apiCall("PATCH","/couriers/"+cid,body).then(function(r){t.disabled=false;if(r&&r.ok){toast("تم حفظ التعديلات");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")}).catch(function(){t.disabled=false});
-    return;
-  }
-  if(t.dataset.crdelete){
-    if(!confirm("حذف هذا الدليفري نهائياً؟ لا يمكن التراجع."))return;
-    apiCall("DELETE","/couriers/"+t.dataset.crdelete).then(function(r){if(r&&r.ok){toast("تم الحذف");crLoad()}else toast((r&&r.message)||"تعذّر الحذف")});
-    return;
-  }
-  if(t.dataset.crtoggle){
-    var pr=t.dataset.crtoggle.split(":");
-    apiCall("PATCH","/couriers/"+pr[0],{active:pr[1]==="1"}).then(function(r){if(r&&r.ok){toast(pr[1]==="1"?"تم التفعيل":"تم الإيقاف");crLoad()}else toast("تعذّر الحفظ")});
     return;
   }
   if(t.id==="crDelAdd"){apiCall("PUT","/couriers/delegates/"+$("crDelSel").value,{grant:true}).then(function(r){if(r&&r.ok){toast("تم التفويض");crLoad()}else toast("تعذّر التفويض")});return}
