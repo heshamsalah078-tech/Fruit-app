@@ -26,7 +26,7 @@ webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIV
 // Send a push notification to every admin device subscribed. Removes subscriptions that are no longer valid.
 async function notifyAdmins(payload) {
   const subs = await pool.query(
-    `SELECT ps.* FROM push_subscriptions ps JOIN staff s ON s.id = ps.staff_id WHERE s.role = 'admin'`
+    `SELECT ps.* FROM push_subscriptions ps JOIN staff s ON s.id = ps.staff_id WHERE s.role IN ('admin','ops')`
   );
   const body = JSON.stringify(payload);
   for (const sub of subs.rows) {
@@ -39,6 +39,21 @@ async function notifyAdmins(payload) {
       } else {
         console.error('push failed', e.message);
       }
+    }
+  }
+}
+
+// Push to specific staff members (e.g. a courier who just got an offer).
+async function notifyStaff(ids, payload) {
+  if (!ids || !ids.length) return;
+  const subs = await pool.query('SELECT * FROM push_subscriptions WHERE staff_id = ANY($1::int[])', [ids]);
+  const body = JSON.stringify(payload);
+  for (const sub of subs.rows) {
+    const pushSub = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
+    try { await webpush.sendNotification(pushSub, body); }
+    catch (e) {
+      if (e.statusCode === 404 || e.statusCode === 410) await pool.query('DELETE FROM push_subscriptions WHERE id=$1', [sub.id]);
+      else console.error('push failed', e.message);
     }
   }
 }
@@ -103,7 +118,20 @@ function requireAuth(...roles) {
 // ---- REFERRAL / REWARDS v2 (see referral.js) ----
 const referral = require('./referral').init({ pool, requireAuth, jwt, JWT_SECRET, express });
 app.use(referral.router);
-const cashCustody = require('./cashCustody').init({ pool, requireAuth, express });
+const staffAdmin = require('./staffAdmin').init({ pool, requireAuth, express, withItems });
+app.use(staffAdmin.router);
+const prepAssign = require('./prepAssign').init({ pool });
+const sla = require('./sla').init({ pool, requireAuth, express });
+app.use(sla.router);
+const cashCustody = require('./cashCustody').init({ pool, requireAuth, express, issueActivation: staffAdmin.issueActivation });
+const trips = require('./trips').init({ pool, requireAuth, express, canTakeDelivery: cashCustody.canTakeDelivery, moveStock, notifyStaff, notifyAdmins });
+app.use(trips.router);
+const cancelPolicy = require('./cancelPolicy').init({ pool, requireAuth, express });
+app.use(cancelPolicy.router);
+const zones = require('./deliveryZones').init({ pool, requireAuth, express });
+app.use(zones.router);
+const earnings = require('./courierEarnings').init({ pool, requireAuth, express });
+app.use(earnings.router);
 app.use(cashCustody.router);
 
 // ---- PUSH SUBSCRIPTIONS ----
@@ -112,7 +140,7 @@ app.get('/push/vapid-public-key', (req, res) => {
 });
 
 // Admin device registers itself to receive push notifications.
-app.post('/push/subscribe', requireAuth('admin'), async (req, res) => {
+app.post('/push/subscribe', requireAuth('admin', 'ops', 'delivery'), async (req, res) => {
   const { endpoint, keys } = req.body.subscription || req.body;
   if (!endpoint || !keys || !keys.p256dh || !keys.auth) {
     return res.status(400).json({ error: 'invalid_subscription' });
@@ -240,7 +268,7 @@ app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
 // phone if they've ordered before, or creates a fresh record, and returns a token either
 // way so the rest of the API (orders, cart sync, complaints) keeps working unchanged.
 app.post('/auth/customer-identify', async (req, res) => {
-  const { name, phone, address, referral_code, verification_token } = req.body;
+  const { name, phone, address, referral_code, verification_token, zone_id } = req.body;
   if (!name || !phone || !address) {
     return res.status(400).json({ error: 'missing_fields', message: 'من فضلك أكمل الاسم ورقم الموبايل والعنوان.' });
   }
@@ -249,24 +277,29 @@ app.post('/auth/customer-identify', async (req, res) => {
   if (refCfg.otp_enforced && !(await referral.isPhoneVerified(phone, verification_token))) {
     return res.status(403).json({ error: 'otp_required', message: 'محتاجين نتأكد من رقم موبايلك بكود SMS.' });
   }
+  if (zone_id) {
+    const zc = await pool.query('SELECT 1 FROM delivery_zones WHERE id = $1 AND active = true', [Number(zone_id)]);
+    if (!zc.rows.length) return res.status(422).json({ error: 'out_of_area', message: zones.OUT_OF_AREA });
+  }
   const existing = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
   let customer;
   let isNewCustomer = false;
   if (existing.rows.length) {
     const r = await pool.query(
-      'UPDATE customers SET name=$1, address=$2 WHERE phone=$3 RETURNING id, name, phone, address',
+      'UPDATE customers SET name=$1, address=$2 WHERE phone=$3 RETURNING id, name, phone, address, zone_id',
       [name, address, phone]
     );
     customer = r.rows[0];
   } else {
     const r = await pool.query(
       `INSERT INTO customers (name, phone, address, role)
-       VALUES ($1,$2,$3,'customer') RETURNING id, name, phone, address`,
+       VALUES ($1,$2,$3,'customer') RETURNING id, name, phone, address, zone_id`,
       [name, phone, address]
     );
     customer = r.rows[0];
     isNewCustomer = true;
   }
+  if (zone_id && (await zones.setCustomerZone(pool, customer.id, zone_id).catch(() => false))) customer.zone_id = Number(zone_id);
   let referralResult = null;
   try {
     customer.referral_code = await referral.ensureCode(customer.id);
@@ -284,51 +317,16 @@ app.post('/auth/staff-login', async (req, res) => {
   if (!r.rows.length) {
     return res.status(401).json({ error: 'invalid_credentials', message: 'بيانات الدخول غير صحيحة.' });
   }
-  const ok = await bcrypt.compare(password, r.rows[0].password_hash);
+  if (!r.rows[0].password_hash) {
+    return res.status(403).json({ error: 'not_activated', message: 'حسابك لم يتفعّل بعد. استخدم "عندي كود تفعيل" وحدّد كلمة سرك.' });
+  }
+  const ok = await bcrypt.compare(String(password || ''), r.rows[0].password_hash);
   if (!ok) {
     return res.status(401).json({ error: 'invalid_credentials', message: 'بيانات الدخول غير صحيحة.' });
   }
   const staffMember = r.rows[0];
   const token = makeToken({ id: staffMember.id, role: staffMember.role, name: staffMember.name });
   res.json({ token, staff: { id: staffMember.id, name: staffMember.name, role: staffMember.role } });
-});
-
-app.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
-  const { name, phone, password, role, job_title, settlement_mode } = req.body;
-  if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name || !phone || !password || password.length < 6) {
-    return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
-  }
-  if (settlement_mode && !['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) {
-    return res.status(400).json({ error: 'invalid_settlement_mode' });
-  }
-  const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
-  if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
-  const hash = await bcrypt.hash(password, 10);
-  const r = await pool.query(
-    `INSERT INTO staff (name, phone, password_hash, role, job_title, settlement_mode)
-     VALUES ($1,$2,$3,$4,$5,COALESCE($6,'per_order')) RETURNING id, name, phone, role, job_title, settlement_mode`,
-    [name, phone, hash, role, job_title || null, role === 'delivery' ? (settlement_mode || 'per_order') : null]
-  );
-  res.json(r.rows[0]);
-});
-
-app.patch('/staff/:id', requireAuth('admin'), async (req, res) => {
-  const { name, job_title, role, password, settlement_mode } = req.body;
-  if (!['prep', 'delivery', 'admin', 'finance'].includes(role) || !name) return res.status(400).json({ error: 'invalid' });
-  if (Number(req.params.id) === req.user.id && role !== 'admin') return res.status(400).json({ error: 'self' });
-  if (settlement_mode && !['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) {
-    return res.status(400).json({ error: 'invalid_settlement_mode' });
-  }
-  if (role === 'delivery' && settlement_mode) {
-    await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3, settlement_mode=$4 WHERE id=$5', [name, job_title || null, role, settlement_mode, req.params.id]);
-  } else {
-    await pool.query('UPDATE staff SET name=$1, job_title=$2, role=$3 WHERE id=$4', [name, job_title || null, role, req.params.id]);
-  }
-  if (password) {
-    if (password.length < 6) return res.status(400).json({ error: 'short_password' });
-    await pool.query('UPDATE staff SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(password, 10), req.params.id]);
-  }
-  res.json({ ok: true });
 });
 
 app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
@@ -340,10 +338,6 @@ app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0]);
 });
 
-app.get('/staff-list', requireAuth('admin'), async (req, res) => {
-  const r = await pool.query('SELECT id, name, phone, role, job_title, active, settlement_mode FROM staff ORDER BY id');
-  res.json(r.rows);
-});
 app.patch('/staff/:id/active', requireAuth('admin'), async (req, res) => {
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'self' });
   const r = await pool.query('UPDATE staff SET active = NOT active WHERE id=$1 RETURNING id, active', [req.params.id]);
@@ -444,11 +438,16 @@ app.post('/stock/movement', requireAuth('admin'), async (req, res) => {
 // (status -> 'on_the_way'). This way a confirmed-but-not-yet-shipped order holds its
 // items without falsely showing the warehouse as emptier than it really is.
 app.post('/orders', requireAuth('customer'), async (req, res) => {
-  const { customer_id, items, delivery_fee } = req.body;
+  const { customer_id, items } = req.body;
   if (Number(customer_id) !== req.user.id) return res.status(403).json({ error: 'forbidden' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Delivery fee: looked up from the zones table at confirmation time and frozen on the order. The app's value is ignored.
+    const zr = await zones.resolveForOrder(client, customer_id, req.body.zone_id);
+    if (!zr.ok) { await client.query('ROLLBACK'); return res.status(zr.code === 'out_of_area' ? 422 : 400).json({ error: zr.code, message: zr.message }); }
+    const delivery_fee = zr.zone.fee;
 
     // Lock and check AVAILABLE stock (physical minus already-reserved) for every item first
     for (const it of items) {
@@ -498,9 +497,9 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     const itemsSum = items.reduce((a, it) => a + Number(it.quantity) * Number(it.unit_price), 0);
     const serverTotal = Math.max(Math.round((itemsSum + Number(delivery_fee || 0) - rd.discount) * 100) / 100, 0);
     const orderR = await client.query(
-      `INSERT INTO orders (customer_id, status, delivery_fee, reward_discount, total, payment_status)
-       VALUES ($1,'awaiting_prep',$2,$3,$4,'due') RETURNING *`,
-      [customer_id, delivery_fee, rd.discount, serverTotal]
+      `INSERT INTO orders (customer_id, status, delivery_fee, reward_discount, total, payment_status, zone_id, zone_name)
+       VALUES ($1,'awaiting_prep',$2,$3,$4,'due',$5,$6) RETURNING *`,
+      [customer_id, delivery_fee, rd.discount, serverTotal, zr.zone.id, zr.zone.name]
     );
     const order = orderR.rows[0];
     await referral.recordDiscount(client, order.id, customer_id, rd.lines);
@@ -515,6 +514,7 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
       await client.query('UPDATE products SET reserved_qty = reserved_qty + $1 WHERE id=$2', [it.quantity, it.product_id]);
     }
     await client.query('COMMIT');
+    prepAssign.kick(); trips.kick();
     res.json(order);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -560,23 +560,33 @@ async function withItems(orders) {
 }
 
 // Prep staff (and admin, view-only): awaiting_prep + preparing orders
-app.get('/orders/staff/prep', requireAuth('prep', 'admin'), async (req, res) => {
+// A prep employee sees ONLY the orders the ops manager assigned to him. Admin/ops see all (view-only).
+app.get('/orders/staff/prep', requireAuth('prep', 'admin', 'ops'), async (req, res) => {
+  const mine = req.user.role === 'prep' ? req.user.id : null;
   const r = await pool.query(
-    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone
+    `SELECT o.*, EXTRACT(EPOCH FROM (o.prep_due_at - now()))::int AS prep_remaining_s,
+            EXTRACT(EPOCH FROM (o.pickup_due_at - now()))::int AS pickup_remaining_s,
+            EXTRACT(EPOCH FROM (o.delivery_due_at - now()))::int AS delivery_remaining_s,
+            c.name AS customer_name, c.phone AS customer_phone
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status IN ('awaiting_prep','preparing') ORDER BY o.created_at`
+     WHERE o.status IN ('awaiting_prep','preparing')
+       AND ($1::int IS NULL OR o.assigned_prep_id = $1::int)
+     ORDER BY o.created_at`, [mine]
   );
   res.json(await withItems(r.rows));
 });
 
 // Delivery staff (and admin, view-only): awaiting_delivery + on_the_way orders,
 // plus the delivery person's own recently delivered & paid orders (last 7 days).
-app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, res) => {
-  const me = req.user.role === 'admin' ? null : req.user.id;
+app.get('/orders/staff/delivery', requireAuth('delivery', 'admin', 'ops'), async (req, res) => {
+  const me = req.user.role === 'delivery' ? req.user.id : null;
   const r = await pool.query(
-    `SELECT o.*, c.name AS customer_name, c.phone AS customer_phone, c.address
+    `SELECT o.*, EXTRACT(EPOCH FROM (o.prep_due_at - now()))::int AS prep_remaining_s,
+            EXTRACT(EPOCH FROM (o.pickup_due_at - now()))::int AS pickup_remaining_s,
+            EXTRACT(EPOCH FROM (o.delivery_due_at - now()))::int AS delivery_remaining_s,
+            c.name AS customer_name, c.phone AS customer_phone, c.address
      FROM orders o JOIN customers c ON c.id = o.customer_id
-     WHERE o.status = 'awaiting_delivery'
+     WHERE (o.status = 'awaiting_delivery' AND ($1::int IS NULL OR o.assigned_delivery_id = $1::int))
         OR (o.status = 'on_the_way' AND ($1::int IS NULL OR o.delivery_staff_id = $1::int))
         OR (o.status = 'delivered' AND o.payment_status = 'paid'
             AND ($1::int IS NULL OR o.delivery_staff_id = $1::int)
@@ -589,7 +599,7 @@ app.get('/orders/staff/delivery', requireAuth('delivery', 'admin'), async (req, 
 // Admin-only: orders delayed more than 30 minutes, queried on demand.
 // ?delivered=1 -> delayed orders that WERE eventually delivered (delivered_at - created_at > 30 min)
 // ?delivered=0 (default) -> still-open orders delayed more than 30 min since creation
-app.get('/orders/delayed', requireAuth('admin'), async (req, res) => {
+app.get('/orders/delayed', requireAuth('admin', 'ops'), async (req, res) => {
   const wantDelivered = req.query.delivered === '1' || req.query.delivered === 'true';
   let r;
   if (wantDelivered) {
@@ -636,6 +646,10 @@ const STATUS_MOVES = {
 app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res) => {
   const { status } = req.body;
   const moves = STATUS_MOVES[req.user.role] || {};
+  // The ops manager starts every trip from the trips screen ("بدأت"), never the courier.
+  if (req.user.role === 'delivery' && status === 'on_the_way') {
+    return res.status(403).json({ error: 'ops_starts_trip', message: 'مدير التشغيل هو اللي بيبدأ الرحلة.' });
+  }
   // A courier who still owes cash from a prior delivered order (and is on the 'per_order' settlement
   // policy) cannot claim a new delivery until that cash is confirmed received by finance/admin.
   if (req.user.role === 'delivery' && status === 'on_the_way') {
@@ -653,9 +667,15 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT status, delivery_staff_id FROM orders WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT status, delivery_staff_id, assigned_prep_id, assigned_delivery_id FROM orders WHERE id=$1 FOR UPDATE', [req.params.id]);
     if (!cur.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not_found' }); }
     const row = cur.rows[0];
+    // Only the employee the ops manager assigned may move the order forward.
+    if ((req.user.role === 'prep' && row.assigned_prep_id !== req.user.id) ||
+        (req.user.role === 'delivery' && status === 'on_the_way' && row.assigned_delivery_id !== req.user.id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'not_assigned', message: 'هذا الطلب غير معيّن لك.' });
+    }
     if (moves[row.status] !== status || (status === 'delivered' && row.delivery_staff_id !== req.user.id)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'not_allowed', message: 'لا يمكنك تنفيذ هذا التغيير على هذا الطلب.' });
@@ -680,8 +700,13 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
     }
 
     if (status === 'delivered') await referral.onDelivered(client, req.params.id);
+    if (status === 'delivered') await earnings.credit(client, req.params.id, 'delivered');
+    if (status === 'delivered' && r.rows[0].trip_id) await trips.refreshTrip(client, r.rows[0].trip_id);
 
     await client.query('COMMIT');
+    if (status === 'awaiting_delivery') { prepAssign.kick(); trips.kick(); }
+    // A courier may have just finished his last order: he becomes a candidate immediately and the oldest waiting order goes to him.
+    if (status === 'delivered') trips.kick();
     res.json(r.rows[0]);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -697,8 +722,9 @@ app.patch('/orders/:id/status', requireAuth('prep', 'delivery'), async (req, res
 // that point just releases the reservation (no stock_movements row — nothing physically
 // moved). Cancelling after dispatch (customer refused at the door) means stock really did
 // leave, so that case logs a proper 'cancel_restock' return movement, as before.
-app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, res) => {
+app.patch('/orders/:id/cancel', requireAuth('customer', 'admin', 'ops'), async (req, res) => {
   const client = await pool.connect();
+  let cancelInfo = null;
   try {
     await client.query('BEGIN');
     const ord = await client.query('SELECT * FROM orders WHERE id=$1 FOR UPDATE', [req.params.id]);
@@ -712,20 +738,33 @@ app.patch('/orders/:id/cancel', requireAuth('customer', 'admin'), async (req, re
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'not_allowed', message: 'لا يمكن إلغاء هذا الطلب.' });
     }
+    cancelInfo = await cancelPolicy.record(client, order, { role: req.user.role, id: req.user.id, reason: (req.body || {}).reason });
     const dispatched = ['on_the_way'].includes(order.status);
     const items = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id=$1', [order.id]);
     for (const it of items.rows) {
       if (dispatched) {
-        // Stock had already physically left — bring it back as a real return.
-        await moveStock(client, { product_id: it.product_id, type: 'cancel_restock', quantity: it.quantity, order_id: order.id, note: 'إلغاء طلب بعد خروجه للتوصيل' });
+        // Stock physically left. It comes back ONLY when the courier confirms the goods are back in the store
+        // (POST /courier/returned), never while it is still in his bag. Until then the order is 'return_pending'.
       } else {
         // Still just a reservation — release it, nothing to restock physically.
         await client.query('UPDATE products SET reserved_qty = GREATEST(reserved_qty - $1, 0) WHERE id=$2', [it.quantity, it.product_id]);
       }
     }
-    const r = await client.query("UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *", [order.id]);
+    const r = await client.query("UPDATE orders SET status='cancelled', return_pending=$2 WHERE id=$1 RETURNING *", [order.id, dispatched]);
+    if (dispatched) await earnings.credit(client, order.id, 'cancelled_after_departure');
     await referral.clearOrderRewards(client, order.id);
+    if (r.rows[0].trip_id) await trips.refreshTrip(client, r.rows[0].trip_id);
     await client.query('COMMIT');
+    prepAssign.kick(); trips.kick();
+    if (cancelInfo) {
+      const lbl = { queued: 'في الطابور', prep_assigned: 'معيّن للتجهيز', preparing: 'جاري التجهيز', ready: 'جاهز', departed: 'بعد خروج المندوب' }[cancelInfo.stage];
+      if (cancelInfo.stage === 'departed' && cancelInfo.courier_id) {
+        notifyStaff([cancelInfo.courier_id], { title: '❌ أوردر اتلغى', body: `الأوردر #${order.id} اتلغى وهو معاك. ارجع بيه المحل واضغط "رجّعت الأوردر". حقّ التوصيل محفوظ لك.`, tag: 'cancel-' + order.id, url: '/staff/#driver' }).catch(() => {});
+      } else if ((cancelInfo.stage === 'prep_assigned' || cancelInfo.stage === 'preparing') && cancelInfo.prep_staff_id) {
+        notifyStaff([cancelInfo.prep_staff_id], { title: '❌ أوردر اتلغى', body: `الأوردر #${order.id} اتلغى. وقّف التجهيز.`, tag: 'cancel-' + order.id, url: '/staff/#store' }).catch(() => {});
+      }
+      if (cancelInfo.stage !== 'queued') notifyAdmins({ title: '❌ إلغاء أوردر', body: `الأوردر #${order.id} اتلغى (${lbl})` + (cancelInfo.company_cost ? ` — تكلفة على الشركة ${cancelInfo.company_cost} ج.م` : ''), tag: 'cancel-' + order.id, url: '/staff/#audit' }).catch(() => {});
+    }
     res.json(r.rows[0]);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -938,4 +977,9 @@ setInterval(checkInactiveCustomers, 6 * 60 * 60 * 1000);
 checkInactiveCustomers();
 
 const PORT = process.env.PORT || 3000;
+setInterval(() => prepAssign.kick(), 30 * 1000);
+prepAssign.kick();
+setInterval(() => trips.kick(), 15 * 1000);
+trips.kick();
+
 app.listen(PORT, () => console.log('API running on port ' + PORT));
