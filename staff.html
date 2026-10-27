@@ -188,19 +188,21 @@ function go(t){
 }
 
 /* ---------- team (admin) ---------- */
-var TM=[],editId=0,SMS_ON=false;
+var TM=[],editId=0,SMS_ON=false,ACT_REQ=false;
 function teamLoad(){
   Promise.all([
     apiCall("GET","/staff-list").then(function(r){TM=Array.isArray(r)?r:[]}),
-    apiCall("GET","/settings/sms").then(function(r){SMS_ON=!!(r&&r.enabled)})
+    apiCall("GET","/settings/sms").then(function(r){SMS_ON=!!(r&&r.enabled)}),
+    apiCall("GET","/settings/activation").then(function(r){ACT_REQ=!!(r&&r.required)})
   ]).then(teamV).catch(function(){});
 }
 function teamV(){
   var el=$("team");if(!el)return;
   var e=TM.find(function(m){return m.id===editId});
   el.innerHTML='<h1 style="font-size:19px">👥 الموظفون</h1>'+
-    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="smsTog" style="width:18px;height:18px"'+(SMS_ON?' checked':'')+'> إرسال أكواد التفعيل بـ SMS</label>'+
-    '<p class="mute" style="font-size:12px;margin:6px 0 0">'+(SMS_ON?'مفعّل: الكود بيتبعت لموبايل الموظف نفسه.':'مقفول (فترة الاختبار): الكود بيتسجّل في لوج السيرفر فقط ولا يظهر على أي شاشة.')+'</p></div>'+
+    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="actTog" style="width:18px;height:18px"'+(ACT_REQ?' checked':'')+'> تفعيل الموظف بكود تفعيل</label>'+
+    '<p class="mute" style="font-size:12px;margin:6px 0 0">'+(ACT_REQ?'مفعّل: الموظف بيحدّد كلمة سره بنفسه بكود بيوصله.':'موقوف مؤقتاً (لحد ما نفعّل الرسائل): انت بتكتب كلمة السر للموظف مباشرة عند الإضافة أو إعادة التعيين.')+'</p>'+
+    (ACT_REQ?'<label style="display:flex;align-items:center;gap:8px;font-weight:600;margin-top:10px"><input type="checkbox" id="smsTog" style="width:18px;height:18px"'+(SMS_ON?' checked':'')+'> إرسال أكواد التفعيل بـ SMS</label><p class="mute" style="font-size:12px;margin:6px 0 0">'+(SMS_ON?'مفعّل: الكود بيتبعت لموبايل الموظف نفسه.':'مقفول (فترة الاختبار): الكود بيتسجّل في لوج السيرفر فقط ولا يظهر على أي شاشة.')+'</p>':'')+'</div>'+
     (TM.length?TM.map(function(m){
       return '<div class="card"><b>'+esc(m.name)+'</b> — '+esc(m.job_title||"بدون مسمى")+'<br><span class="mute">'+RN[m.role]+(m.role==="delivery"?' · تسوية '+(SMN[m.settlement_mode]||SMN.per_order):'')+' · '+esc(m.phone)+(m.phone2?' · '+esc(m.phone2):'')+(m.active?'':' · موقوف')+(m.activated?'':' · ⏳ لم يُفعَّل بعد')+'</span>'+
         (m.address?'<br><span class="mute">📍 '+esc(m.address)+'</span>':'')+
@@ -217,7 +219,8 @@ function teamV(){
       '<label class="mute" style="display:block;margin-top:8px">نظام تسوية الكاش لهذا المندوب</label>'+
       '<select id="tSM"><option value="per_order">أوردر بأوردر (يُمنع من أوردر جديد لحد ما يسدد)</option><option value="daily">تسوية يومية</option><option value="weekly">تسوية أسبوعية</option></select>'+
     '</div>'+
-    '<p class="mute" style="font-size:12px">🔒 مفيش كلمة سر هنا: الموظف بيحدّدها بنفسه بكود تفعيل بيوصله. الاسم ما بيتعدّلش بعد الإضافة.</p>'+
+    (e?'':(ACT_REQ?'':'<input id="tPw" type="text" placeholder="كلمة السر (6 أحرف على الأقل)" autocomplete="off">'))+
+    '<p class="mute" style="font-size:12px">'+(ACT_REQ?'🔒 مفيش كلمة سر هنا: الموظف بيحدّدها بنفسه بكود تفعيل بيوصله. ':'')+'الاسم ما بيتعدّلش بعد الإضافة.</p>'+
     '<button class="big" id="tAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+
     (e?' <button class="chip" id="tCan" style="margin-top:8px">إلغاء</button>':'')+
     '<p id="tErr" style="color:var(--t)"></p></div>';
@@ -279,15 +282,19 @@ function tripsBlock(){
       (open?'<select data-tasg="'+t.id+'" style="margin-top:8px">'+opts+'</select>':'')+
       (t.status==="assigned"?'<button class="big" style="margin-top:8px" data-tstart="'+t.id+'">▶ بدأت</button>':'')+'</div>';
   }).join(''):'<p class="mute">لا توجد رحلات مفتوحة.</p>';
-  function num(id,v){return '<input type="number" id="'+id+'" value="'+(v===undefined?'':v)+'" style="width:70px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
-  h+='<div class="card"><b>⚙️ إعدادات الرحلات</b><div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px">'+
-    '<span>أقصى عدد أوردرات في الرحلة</span>'+num("tsMax",s.courier_max_orders)+
-    '<span>مهلة تأكيد المندوب (دقيقة)</span>'+num("tsOffer",s.courier_offer_min)+
-    '<span>نبلّغ المندوب قبل انتهاء التجهيز بـ (دقيقة)</span>'+num("tsLead",s.courier_lead_min)+
-    '<span>أقصى تأخير للمندوب بعد "تمام" (دقيقة، تتحسب من جاهزية الأوردر)</span>'+num("tsDelay",s.courier_max_delay_min)+
-    '<span>مهلة تجميع الأوردرات في رحلة (دقيقة، 0 = من غير مهلة)</span>'+num("tsBundle",s.trip_bundle_window_min)+
-    '<span>لو اتأخر عن المدة دي</span><select id="tsLate" style="padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)"><option value="auto"'+(s.courier_late_action!=="manual"?' selected':'')+'>النظام يحوّله أوتوماتيك لمندوب تاني</option><option value="manual"'+(s.courier_late_action==="manual"?' selected':'')+'>المدير يختار (إشعار فقط)</option></select>'+
-    '</div><p class="mute" style="margin:8px 0 0">في الحالتين تقدر تعيّن مندوب تاني بنفسك في أي وقت، والتغيير بيتسجل باسمك.</p><button class="big" id="tsSave" style="margin-top:10px">حفظ الإعدادات</button></div>';
+  var canEdit=(ROLE==="ops"),ro=canEdit?'':' disabled';
+  function num(id,v){return '<input type="number" id="'+id+'" value="'+(v===undefined?'':v)+'"'+ro+' style="width:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
+  function row(label,ctl){return '<div style="margin-top:12px"><div style="line-height:1.5">'+label+'</div><div style="margin-top:6px">'+ctl+'</div></div>'}
+  var selSt='padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%';
+  h+='<div class="card"><b>⚙️ إعدادات الرحلات</b>'+(canEdit?'':'<p class="mute" style="margin:6px 0 0">🔒 للاستعلام فقط — التعديل لمدير التشغيل.</p>')+
+    row('أقصى عدد أوردرات في الرحلة',num("tsMax",s.courier_max_orders))+
+    row('مهلة تأكيد المندوب (دقيقة)',num("tsOffer",s.courier_offer_min))+
+    row('نبلّغ المندوب قبل انتهاء التجهيز بـ (دقيقة)',num("tsLead",s.courier_lead_min))+
+    row('أقصى تأخير للمندوب بعد "تمام" (دقيقة، تتحسب من جاهزية الأوردر)',num("tsDelay",s.courier_max_delay_min))+
+    row('مهلة تجميع الأوردرات في رحلة (دقيقة، 0 = من غير مهلة)',num("tsBundle",s.trip_bundle_window_min))+
+    row('لو اتأخر عن المدة دي','<select id="tsLate"'+ro+' style="'+selSt+'"><option value="auto"'+(s.courier_late_action!=="manual"?' selected':'')+'>النظام يحوّله أوتوماتيك لمندوب تاني</option><option value="manual"'+(s.courier_late_action==="manual"?' selected':'')+'>المدير يختار (إشعار فقط)</option></select>')+
+    '<p class="mute" style="margin:12px 0 0">في الحالتين تقدر تعيّن مندوب تاني بنفسك في أي وقت، والتغيير بيتسجل باسمك.</p>'+
+    (canEdit?'<button class="big" id="tsSave" style="margin-top:10px">حفظ الإعدادات</button>':'')+'</div>';
   return h;
 }
 function tripAct(method,url,body,okMsg){
@@ -416,7 +423,7 @@ function cashV(){
 
 /* ---------- courier management page (admin or delegate) ---------- */
 var CR=null;
-function crLoad(){apiCall("GET","/couriers").then(function(r){CR=(r&&r.couriers)?r:null;crV()}).catch(function(){})}
+function crLoad(){Promise.all([apiCall("GET","/couriers").then(function(r){CR=(r&&r.couriers)?r:null}),apiCall("GET","/settings/activation").then(function(r){ACT_REQ=!!(r&&r.required)}).catch(function(){})]).then(crV).catch(function(){})}
 function crColSel(id,cur,cols){
   return '<select data-crcol="'+id+'">'+'<option value="">— أي مدير مالي —</option>'+cols.map(function(c){return '<option value="'+c.id+'"'+(c.id===cur?' selected':'')+'>'+esc(c.name)+' ('+"مدير مالي"+')</option>'}).join('')+'</select>';
 }
@@ -443,7 +450,7 @@ function crV(){
       '</div>';
   }).join(''):'<p class="mute">لا يوجد دليفرية بعد.</p>';
   html+='<div class="card"><h2>إضافة دليفري جديد</h2>'+
-    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel"><input id="crA" placeholder="العنوان"><p class="mute" style="font-size:12px">🔒 الدليفري بيحدّد كلمة سره بنفسه بكود تفعيل بيوصله.</p>'+
+    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel"><input id="crA" placeholder="العنوان">'+(ACT_REQ?'<p class="mute" style="font-size:12px">🔒 الدليفري بيحدّد كلمة سره بنفسه بكود تفعيل بيوصله.</p>':'<input id="crPw" type="text" placeholder="كلمة السر (6 أحرف على الأقل)" autocomplete="off">')+
     '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل</label>'+
     '<select id="crM"><option value="per_order">أوردر بأوردر</option><option value="daily">يوم بيوم</option><option value="weekly">أسبوع بأسبوع</option><option value="suspended">إيقاف التعامل</option></select>'+
     '<label class="mute" style="display:block;margin-top:8px">المحصِّل (الافتراضي: المدير المالي)</label>'+crColSel("new",null,CR.collectors).replace('data-crcol="new"','id="crC"')+
@@ -931,14 +938,17 @@ function setupPush(){
 setInterval(function(){
   if(document.hidden||!TOK)return;
   if(ROLE==="delivery"&&CUR_TAB==="driver")courierRefresh();
-  if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops")opsLoad();
+  if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops"&&!TS_DIRTY)opsLoad();
 },15000);
+var TS_DIRTY=false;
+document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Bundle|Late)$/.test(e.target.id))TS_DIRTY=true});
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
   if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
+  if(t.id==="actTog"){apiCall("PUT","/settings/activation",{required:t.checked}).then(function(r){if(r&&r.ok)ACT_REQ=r.required;else toast("تعذّر الحفظ");teamV()});return}
   if(t.id==="smsTog"){apiCall("PUT","/settings/sms",{enabled:t.checked}).then(function(r){if(r&&r.ok)SMS_ON=r.enabled;else toast("تعذّر الحفظ");teamV()});return}
   if(t.dataset&&t.dataset.asg){
     var ap=t.dataset.asg.split(":"),ab={order_ids:[Number(ap[0])]};
@@ -1031,6 +1041,7 @@ document.addEventListener("click",function(e){
   }
   if(t.id==="crAdd"){
     var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),phone2:$("crP2").value.trim(),address:$("crA").value.trim(),settlement_mode:$("crM").value,collector_id:$("crC").value||null};
+    if(!ACT_REQ){cb.password=$("crPw")?$("crPw").value:"";if(cb.password.length<6){$("crErr").textContent="اكتب كلمة سر 6 أحرف على الأقل";return}}
     t.disabled=true;
     apiCall("POST","/couriers",cb).then(function(r){t.disabled=false;if(r&&r.ok){toast("تمت إضافة الدليفري");crLoad()}else{$("crErr").textContent=(r&&r.message)||"تعذّرت الإضافة"}}).catch(function(){t.disabled=false});
     return;
@@ -1073,20 +1084,23 @@ document.addEventListener("click",function(e){
   if(t.dataset.te){editId=Number(t.dataset.te);teamV();return}
   if(t.id==="tCan"){editId=0;teamV();return}
   if(t.dataset.trs){
-    if(!confirm("هيتم إلغاء كلمة السر الحالية لهذا الموظف، وحسابه هيقفل لحد ما يفعّله بكود جديد بيوصله هو. متأكد؟"))return;
-    apiCall("POST","/staff/"+t.dataset.trs+"/reset-password").then(function(r){
-      if(r&&r.ok){toast("تم إلغاء كلمة السر وإرسال كود تفعيل للموظف");teamLoad()}else toast((r&&r.message)||"تعذّرت إعادة التعيين");
+    var rpw=null;
+    if(ACT_REQ){if(!confirm("هيتم إلغاء كلمة السر الحالية لهذا الموظف، وحسابه هيقفل لحد ما يفعّله بكود جديد بيوصله هو. متأكد؟"))return}
+    else{rpw=prompt("اكتب كلمة السر الجديدة للموظف (6 أحرف على الأقل)");if(rpw===null)return;if(rpw.length<6){toast("كلمة السر 6 أحرف على الأقل");return}}
+    apiCall("POST","/staff/"+t.dataset.trs+"/reset-password",rpw?{password:rpw}:{}).then(function(r){
+      if(r&&r.ok){toast(r.direct?"تم تغيير كلمة السر":"تم إلغاء كلمة السر وإرسال كود تفعيل للموظف");teamLoad()}else toast((r&&r.message)||"تعذّرت إعادة التعيين");
     });
     return;
   }
   if(t.id==="tAdd"){
     var body={name:$("tN").value.trim(),job_title:$("tT").value.trim(),phone:$("tP").value.trim(),phone2:$("tP2").value.trim(),address:$("tA").value.trim(),role:$("tR").value};
     if(body.role==="delivery")body.settlement_mode=$("tSM").value;
+    if(!editId&&!ACT_REQ){body.password=$("tPw")?$("tPw").value:"";if(body.password.length<6){$("tErr").textContent="اكتب كلمة سر 6 أحرف على الأقل";return}}
     if(!body.name||!body.phone){$("tErr").textContent="أكمل الاسم ورقم الموبايل";return}
     var wasEdit=!!editId;
     var req=editId?apiCall("PATCH","/staff/"+editId,body):apiCall("POST","/auth/staff-create",body);
     req.then(function(r){
-      if(r.id||r.ok){toast(wasEdit?"تم الحفظ":"تمت الإضافة — كود التفعيل راح للموظف نفسه");editId=0;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
+      if(r.id||r.ok){toast(wasEdit?"تم الحفظ":(r.direct?"تمت الإضافة":"تمت الإضافة — كود التفعيل راح للموظف نفسه"));editId=0;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
     }).catch(function(){$("tErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
   }
@@ -1134,7 +1148,7 @@ document.addEventListener("click",function(e){
   if(t.id==="acSave"){auditSave();return}
   if(t.id==="audCanc"){auditLoad("canc");return}
   if(t.id==="audAsg"){auditLoad("asg");return}
-  if(t.id==="tsSave"){tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
+  if(t.id==="tsSave"){TS_DIRTY=false;tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
 
   if(t.dataset.ce){editCid=Number(t.dataset.ce);catV();return}
   if(t.id==="cCan"){editCid=0;catV();return}

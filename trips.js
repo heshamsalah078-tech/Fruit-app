@@ -735,7 +735,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
   router.get('/trips/settings', requireAuth('admin', 'ops'), async (req, res) => {
     try { res.json(await getSettings()); } catch (e) { res.status(500).json({ error: 'failed' }); }
   });
-  router.put('/trips/settings', requireAuth('admin', 'ops'), async (req, res) => {
+  router.put('/trips/settings', requireAuth('ops'), async (req, res) => {
     try {
       const pairs = [];
       if (req.body.trip_bundle_window_min !== undefined) {
