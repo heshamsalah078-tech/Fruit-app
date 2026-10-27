@@ -85,6 +85,18 @@ html[data-boot="app"] #app{display:block!important}
     <input id="aPass" type="password" placeholder="كلمة السر">
     <button class="big" id="aGo">دخول</button>
     <p id="aErr" style="color:var(--t)"></p>
+    <button class="chip" id="aActShow">🔑 عندي كود تفعيل (أول دخول)</button>
+  </div>
+  <div class="card" id="actCard" style="display:none">
+    <h2>تفعيل حسابك</h2>
+    <p class="mute" style="font-size:13px">الكود وصلك على موبايلك. حدّد كلمة السر بنفسك، ومحدش في الإدارة هيعرفها.</p>
+    <input id="actPhone" placeholder="رقم الموبايل" inputmode="tel">
+    <input id="actCode" placeholder="كود التفعيل" autocapitalize="characters" autocomplete="off">
+    <input id="actPass" type="password" placeholder="كلمة السر الجديدة (6 أحرف على الأقل)">
+    <input id="actPass2" type="password" placeholder="أعد كتابة كلمة السر">
+    <button class="big" id="actGo">تفعيل الحساب</button>
+    <button class="chip" id="actBack" style="margin-top:8px">رجوع لتسجيل الدخول</button>
+    <p id="actErr" style="color:var(--t)"></p>
   </div>
 </div>
 
@@ -94,6 +106,8 @@ html[data-boot="app"] #app{display:block!important}
 <section id="store"></section>
 <section id="driver"></section>
 <section id="delayed"></section>
+<section id="audit"></section>
+<section id="zones"></section>
 <section id="categories"></section>
 <section id="products"></section>
 <section id="stock"></section>
@@ -104,6 +118,8 @@ html[data-boot="app"] #app{display:block!important}
 <section id="team"></section>
 <section id="cash"></section>
 <section id="couriers"></section>
+<section id="ops"></section>
+<section id="me"></section>
 
 </div>
 
@@ -115,7 +131,7 @@ function $(id){return document.getElementById(id)}
 var API=(location.protocol==="http:"||location.protocol==="https:")&&location.hostname.indexOf("claudeusercontent")<0?"":"https://fruit-app-production.up.railway.app";
 var swReady=("serviceWorker" in navigator)?navigator.serviceWorker.register("/sw.js").catch(function(e){console.error("sw register failed",e);return null}):Promise.resolve(null);
 // Session is kept in memory only (not localStorage) so the app always asks to log in again each time it is opened.
-var TOK="",ROLE="",MYID=0,MYNAME="";
+var TOK="",ROLE="",MYID=0,MYNAME="",CUR_TAB="";
 
 function apiCall(method,path,body){
   var opt={method:method,headers:{"Content-Type":"application/json"}};
@@ -135,26 +151,29 @@ function dt(s){
   return d.toLocaleString("ar-EG",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
 }
 
-var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة",finance:"مدير مالي"};
+var RN={prep:"تجهيز",delivery:"توصيل",admin:"إدارة",finance:"مدير مالي",ops:"مدير تشغيل"};
 var SMN={per_order:"أوردر بأوردر",daily:"يومي",weekly:"أسبوعي",suspended:"موقوف التعامل"};
 var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"],["cash","💵","حساباتي"]],
   finance:[["cash","💵","التحصيل"]],
-  admin:[["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المتأخرة"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
+  ops:[["ops","🗂️","التشغيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["audit","❌","الإلغاءات والتعيين اليدوي"]],
+  admin:[["ops","🗂️","التشغيل"],["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["audit","❌","الإلغاءات والتعيين اليدوي"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
-  var items=(NAV[ROLE]||[]).concat([["out","🚪","خروج"]]);
+  var items=(NAV[ROLE]||[]).concat([["me","👤","حسابي"],["out","🚪","خروج"]]);
   $("nav").innerHTML=items.map(function(it,i){return '<button data-t="'+it[0]+'"'+(i===0?' class="on"':'')+'><span>'+it[1]+'</span>'+it[2]+'</button>'}).join("");
 }
 function go(t){
   if(t==="out"){logout();return}
   document.querySelectorAll("section").forEach(function(s){s.classList.toggle("on",s.id===t)});
   document.querySelectorAll("nav button").forEach(function(b){b.classList.toggle("on",b.dataset.t===t)});
-  window.scrollTo(0,0);
+  window.scrollTo(0,0);CUR_TAB=t;
   if(t==="team")teamLoad();
   if(t==="store"||t==="driver")ordShell();
   if(t==="delayed"){DLY=null;delayedShell()}
+  if(t==="audit")auditShell();
+  if(t==="zones")zonesLoad();
   if(t==="categories")catLoad();
   if(t==="products")prodLoad();
   if(t==="stock")stockLoad();
@@ -164,26 +183,41 @@ function go(t){
   if(t==="complaints"){COMPL=null;complaintsShell()}
   if(t==="cash")cashLoad();
   if(t==="couriers")crLoad();
+  if(t==="ops")opsLoad();
+  if(t==="me")meLoad();
 }
 
 /* ---------- team (admin) ---------- */
-var TM=[],editId=0;
-function teamLoad(){apiCall("GET","/staff-list").then(function(r){TM=Array.isArray(r)?r:[];teamV()}).catch(function(){})}
+var TM=[],editId=0,SMS_ON=false;
+function teamLoad(){
+  Promise.all([
+    apiCall("GET","/staff-list").then(function(r){TM=Array.isArray(r)?r:[]}),
+    apiCall("GET","/settings/sms").then(function(r){SMS_ON=!!(r&&r.enabled)})
+  ]).then(teamV).catch(function(){});
+}
 function teamV(){
   var el=$("team");if(!el)return;
   var e=TM.find(function(m){return m.id===editId});
   el.innerHTML='<h1 style="font-size:19px">👥 الموظفون</h1>'+
-    (TM.length?TM.map(function(m){return '<div class="card"><b>'+esc(m.name)+'</b> — '+esc(m.job_title||"بدون مسمى")+'<br><span class="mute">'+RN[m.role]+(m.role==="delivery"?' · تسوية '+(SMN[m.settlement_mode]||SMN.per_order):'')+' · '+esc(m.phone)+(m.active?'':' · موقوف')+'</span><br><button class="chip" data-te="'+m.id+'" style="margin-top:8px">تعديل</button> <button class="chip" data-tg="'+m.id+'">'+(m.active?'إيقاف':'تفعيل')+'</button></div>'}).join(''):'<p class="mute">لا يوجد موظفون بعد.</p>')+
+    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="smsTog" style="width:18px;height:18px"'+(SMS_ON?' checked':'')+'> إرسال أكواد التفعيل بـ SMS</label>'+
+    '<p class="mute" style="font-size:12px;margin:6px 0 0">'+(SMS_ON?'مفعّل: الكود بيتبعت لموبايل الموظف نفسه.':'مقفول (فترة الاختبار): الكود بيتسجّل في لوج السيرفر فقط ولا يظهر على أي شاشة.')+'</p></div>'+
+    (TM.length?TM.map(function(m){
+      return '<div class="card"><b>'+esc(m.name)+'</b> — '+esc(m.job_title||"بدون مسمى")+'<br><span class="mute">'+RN[m.role]+(m.role==="delivery"?' · تسوية '+(SMN[m.settlement_mode]||SMN.per_order):'')+' · '+esc(m.phone)+(m.phone2?' · '+esc(m.phone2):'')+(m.active?'':' · موقوف')+(m.activated?'':' · ⏳ لم يُفعَّل بعد')+'</span>'+
+        (m.address?'<br><span class="mute">📍 '+esc(m.address)+'</span>':'')+
+        '<br><button class="chip" data-te="'+m.id+'" style="margin-top:8px">تعديل</button> <button class="chip" data-tg="'+m.id+'">'+(m.active?'إيقاف':'تفعيل')+'</button>'+
+        (m.id!==MYID?' <button class="chip" data-trs="'+m.id+'" style="color:var(--t)">🔑 إعادة تعيين كلمة السر</button>':'')+'</div>'}).join(''):'<p class="mute">لا يوجد موظفون بعد.</p>')+
     '<div class="card"><h2>'+(e?'تعديل موظف':'إضافة موظف جديد')+'</h2>'+
-    '<input id="tN" placeholder="الاسم" value="'+esc(e&&e.name)+'">'+
+    '<input id="tN" placeholder="الاسم" value="'+esc(e&&e.name)+'"'+(e?' disabled':'')+'>'+
     '<input id="tT" placeholder="المسمى الوظيفي (اختياري)" value="'+esc(e&&e.job_title)+'">'+
     '<input id="tP" placeholder="رقم الموبايل" inputmode="tel" value="'+esc(e&&e.phone)+'"'+(e?' disabled':'')+'>'+
-    '<input id="tW" type="password" placeholder="'+(e?'كلمة سر جديدة (اختياري)':'كلمة السر (6 أحرف على الأقل)')+'">'+
-    '<select id="tR"><option value="prep">تجهيز</option><option value="delivery">توصيل</option><option value="admin">إدارة</option><option value="finance">مدير مالي</option></select>'+
+    '<input id="tP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel" value="'+esc(e&&e.phone2)+'">'+
+    '<input id="tA" placeholder="العنوان" value="'+esc(e&&e.address)+'">'+
+    '<select id="tR"><option value="prep">تجهيز</option><option value="delivery">توصيل</option><option value="ops">مدير تشغيل</option><option value="finance">مدير مالي</option><option value="admin">إدارة</option></select>'+
     '<div id="tSMWrap" style="display:none">'+
       '<label class="mute" style="display:block;margin-top:8px">نظام تسوية الكاش لهذا المندوب</label>'+
       '<select id="tSM"><option value="per_order">أوردر بأوردر (يُمنع من أوردر جديد لحد ما يسدد)</option><option value="daily">تسوية يومية</option><option value="weekly">تسوية أسبوعية</option></select>'+
     '</div>'+
+    '<p class="mute" style="font-size:12px">🔒 مفيش كلمة سر هنا: الموظف بيحدّدها بنفسه بكود تفعيل بيوصله. الاسم ما بيتعدّلش بعد الإضافة.</p>'+
     '<button class="big" id="tAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+
     (e?' <button class="chip" id="tCan" style="margin-top:8px">إلغاء</button>':'')+
     '<p id="tErr" style="color:var(--t)"></p></div>';
@@ -193,18 +227,142 @@ function teamV(){
   $("tR").addEventListener("change",syncSM);syncSM();
 }
 
+/* ---------- ops manager: assign orders to prep / delivery staff ---------- */
+var OPS={orders:null,staff:null,onlyUn:true,trips:null,sel:{}};
+function opsLoad(){
+  Promise.all([
+    apiCall("GET","/orders/ops").then(function(r){OPS.orders=Array.isArray(r)?r:[]}),
+    apiCall("GET","/staff/assignable").then(function(r){OPS.staff=(r&&r.prep)?r:{prep:[],delivery:[]}}),
+    apiCall("GET","/trips/ops").then(function(r){OPS.trips=(r&&r.trips)?r:{trips:[],couriers:[],settings:{}}}),
+    apiCall("GET","/returns/pending").then(function(r){OPS.returns=(r&&r.rows)?r.rows:[]}).catch(function(){OPS.returns=[]})
+  ]).then(opsV).catch(function(){});
+}
+function opsNeeds(o){
+  var prepPhase=o.status==="awaiting_prep"||o.status==="preparing";
+  return prepPhase&&!o.assigned_prep_id;
+}
+function opsSel(kind,o){
+  var list=OPS.staff[kind],cur=kind==="prep"?o.assigned_prep_id:o.assigned_delivery_id,curName=kind==="prep"?o.assigned_prep_name:o.assigned_delivery_name;
+  var locked=kind==="prep"?(o.status!=="awaiting_prep"&&o.status!=="preparing"):(o.status==="on_the_way");
+  var opts='<option value="">— غير معيّن —</option>'+list.map(function(m){return '<option value="'+m.id+'"'+(m.id===cur?' selected':'')+'>'+esc(m.name)+(m.job_title?' ('+esc(m.job_title)+')':'')+'</option>'}).join('');
+  if(cur&&!list.some(function(m){return m.id===cur}))opts+='<option value="'+cur+'" selected>'+esc(curName||"؟")+' (غير متاح)</option>';
+  return '<label class="mute" style="display:block;margin-top:8px">'+(kind==="prep"?"🧑‍🍳 موظف التجهيز":"🛵 الدليفري")+'</label><select data-asg="'+o.id+':'+kind+'"'+(locked?' disabled':'')+'>'+opts+'</select>';
+}
+
+var TST={unassigned:"بدون مندوب",offering:"عرض على مندوب",assigned:"مندوب معيّن",on_the_way:"في الطريق"};
+var CST={free:"فاضي",returning:"راجع للمحل",on_trip:"في رحلة",off:"خارج الدوام"};
+function tripsBlock(){
+  var T=OPS.trips;if(!T)return'';
+  var s=T.settings||{};
+  var h='<h2 style="font-size:15px;margin:10px 0 6px">🛵 الرحلات</h2>';
+  var anyEsc=T.trips.some(function(t){return t.escalated_at&&t.status!=="assigned"&&t.status!=="on_the_way"});
+  if(anyEsc)h+='<p style="background:var(--t);color:#fff;padding:10px;border-radius:10px;font-weight:700">🚨 في رحلة ما لقتش مندوب — اختر مندوب بنفسك.</p>';
+  if(OPS.returns&&OPS.returns.length)h+='<div class="card" style="border:2px solid var(--t)"><b>📦 مرتجعات مستنية تأكيد استلامك</b>'+OPS.returns.map(function(r){return '<div style="margin-top:8px">أوردر #'+r.id+' · '+r.total+' ج.م · المندوب: '+esc(r.courier_name||"؟")+(r.return_courier_at?' <span class="mute">(بلّغ إنه رجّعه)</span>':' <span class="mute">(لسه في الطريق)</span>')+'<br><button class="chip" data-retok="'+r.id+'"'+(r.return_courier_at?'':' disabled')+'>✅ استلمته ورجّع المخزون</button></div>'}).join('')+'</div>';
+  var selCount=Object.keys(OPS.sel).filter(function(k){return OPS.sel[k]}).length;
+  if(selCount>=2)h+='<div class="card"><button class="big" id="tMerge">🔗 دمج '+selCount+' رحلات في رحلة واحدة</button></div>';
+  h+=T.trips.length?T.trips.map(function(t){
+    var open=t.status==="unassigned"||t.status==="offering"||t.status==="assigned";
+    var esc_=t.escalated_at&&(t.status==="unassigned"||t.status==="offering");
+    var ready=t.all_prepared?"جاهزة ✅":(t.ready_in_s===null||t.ready_in_s===undefined?"التجهيز لسه ما بدأش":(t.ready_in_s>0?"جاهزة بعد "+Math.ceil(t.ready_in_s/60)+" د":"التجهيز متأخر"));
+    var who=t.status==="offering"?'عرض على <b>'+esc(t.offer_courier_name||"؟")+'</b> — باقي '+Math.max(t.offer_remaining_s||0,0)+' ث':
+            t.courier_name?'🛵 <b>'+esc(t.courier_name)+'</b>'+(t.status==="assigned"?(t.courier_at_store?' — وصل المحل ✅':' — لسه في الطريق للمحل'):''):'بدون مندوب';
+    var lateMsg=(t.status==="assigned"&&!t.courier_at_store&&t.late_notified_at)?'<p style="color:var(--t);font-weight:700;margin:6px 0 0">⚠️ المندوب قال "تمام" وما وصلش في الميعاد — كلّمه واختار مندوب تاني من القايمة لو لزم.</p>':'';
+    var opts='<option value="">— اختر مندوب (تعيين يدوي) —</option>'+(T.couriers||[]).map(function(c){
+      return '<option value="'+c.id+'"'+(c.id===t.courier_id?' selected':'')+'>'+esc(c.name)+' — '+CST[c.state]+(c.reserved&&c.id!==t.courier_id?' (محجوز)':'')+'</option>'}).join('');
+    return '<div class="card"'+(esc_?' style="border:2px solid var(--t)"':'')+'>'+
+      '<div style="display:flex;justify-content:space-between;align-items:center"><b>رحلة #'+t.id+' — '+TST[t.status]+'</b>'+
+      (open?'<label class="mute"><input type="checkbox" data-tsel="'+t.id+'"'+(OPS.sel[t.id]?' checked':'')+' style="width:18px;height:18px;vertical-align:middle"> للدمج</label>':'')+'</div>'+
+      (esc_?'<p style="color:var(--t);font-weight:700;margin:6px 0 0">🚨 ما لقتش مندوب</p>':'')+lateMsg+((t.bundle_remaining_s>0&&t.orders.length===1&&t.status!=="on_the_way")?'<p style="color:var(--t);font-weight:700;margin:6px 0 0">🔗 تقدر تضيف عليها أوردرات تانية — باقي '+Math.ceil(t.bundle_remaining_s/60)+' د، وبعدها تمشي زي ما هي (اختار رحلتين أو أكتر واضغط دمج).</p>':'')+
+      '<p class="mute" style="margin:6px 0 0">'+who+(t.status!=="on_the_way"?' · '+ready:'')+'</p>'+
+      t.orders.map(function(o){return '<div style="margin-top:6px">• أوردر #'+o.id+' — '+esc(o.customer_name)+(o.address?' · 📍 '+esc(o.address):'')+' · '+o.total+' ج.م'+
+        (open&&t.orders.length>1?' <button class="chip" data-tsplit="'+o.id+'">فصل</button>':'')+'</div>'}).join('')+
+      (open?'<select data-tasg="'+t.id+'" style="margin-top:8px">'+opts+'</select>':'')+
+      (t.status==="assigned"?'<button class="big" style="margin-top:8px" data-tstart="'+t.id+'">▶ بدأت</button>':'')+'</div>';
+  }).join(''):'<p class="mute">لا توجد رحلات مفتوحة.</p>';
+  function num(id,v){return '<input type="number" id="'+id+'" value="'+(v===undefined?'':v)+'" style="width:70px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
+  h+='<div class="card"><b>⚙️ إعدادات الرحلات</b><div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px">'+
+    '<span>أقصى عدد أوردرات في الرحلة</span>'+num("tsMax",s.courier_max_orders)+
+    '<span>مهلة تأكيد المندوب (دقيقة)</span>'+num("tsOffer",s.courier_offer_min)+
+    '<span>نبلّغ المندوب قبل انتهاء التجهيز بـ (دقيقة)</span>'+num("tsLead",s.courier_lead_min)+
+    '<span>أقصى تأخير للمندوب بعد "تمام" (دقيقة، تتحسب من جاهزية الأوردر)</span>'+num("tsDelay",s.courier_max_delay_min)+
+    '<span>مهلة تجميع الأوردرات في رحلة (دقيقة، 0 = من غير مهلة)</span>'+num("tsBundle",s.trip_bundle_window_min)+
+    '<span>لو اتأخر عن المدة دي</span><select id="tsLate" style="padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)"><option value="auto"'+(s.courier_late_action!=="manual"?' selected':'')+'>النظام يحوّله أوتوماتيك لمندوب تاني</option><option value="manual"'+(s.courier_late_action==="manual"?' selected':'')+'>المدير يختار (إشعار فقط)</option></select>'+
+    '</div><p class="mute" style="margin:8px 0 0">في الحالتين تقدر تعيّن مندوب تاني بنفسك في أي وقت، والتغيير بيتسجل باسمك.</p><button class="big" id="tsSave" style="margin-top:10px">حفظ الإعدادات</button></div>';
+  return h;
+}
+function tripAct(method,url,body,okMsg){
+  apiCall(method,url,body).then(function(r){toast(r&&r.ok?okMsg:((r&&r.message)||"تعذّر التنفيذ"));OPS.sel={};opsLoad()}).catch(function(){toast("تعذّر الاتصال")});
+}
+function opsV(){
+  var el=$("ops");if(!el)return;
+  if(!OPS.orders||!OPS.staff){el.innerHTML='<h1 style="font-size:19px">🗂️ التشغيل</h1><p class="mute">جارِ التحميل...</p>';return}
+  var list=OPS.onlyUn?OPS.orders.filter(opsNeeds):OPS.orders;
+  var html='<h1 style="font-size:19px">🗂️ التشغيل</h1>'+tripsBlock()+'<h2 style="font-size:15px;margin:14px 0 6px">🧑‍🍳 تعيين موظفي التجهيز</h2>'+
+    '<p class="mute" style="margin:0 0 8px">التعيين أوتوماتيك. تقدر تغيّر موظف التجهيز أو المندوب يدويًا، وانت المسؤول عن النتيجة.</p>'+
+    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="opsOnlyUn" style="width:18px;height:18px"'+(OPS.onlyUn?' checked':'')+'> الطلبات الناقصة تعيين فقط</label>'+
+    '<button class="chip" id="opsGo" style="margin-top:8px">🔄 تحديث</button></div>';
+  if(!OPS.staff.prep.length)html+='<p class="mute">⚠️ لا يوجد موظف تجهيز مُفعَّل.</p>';
+  html+=list.length?list.map(function(o){
+    return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+(o.address?' · 📍 '+esc(o.address):'')+
+      '<br><span class="mute">'+(o.items||[]).map(function(i){return esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity}).join('، ')+'</span><br><b>'+o.total+' ج.م</b> · <span class="mute">'+dt(o.created_at)+'</span>'+
+      opsSel("prep",o)+'</div>'}).join(''):'<p class="mute">لا توجد طلبات '+(OPS.onlyUn?'ناقصة تعيين':'مفتوحة')+' حالياً 🎉</p>';
+  el.innerHTML=html;
+}
+
+/* ---------- my account (every employee: set own password) ---------- */
+function meLoad(){apiCall("GET","/staff/me").then(meV).catch(function(){})}
+function meV(m){
+  var el=$("me");if(!el||!m)return;
+  el.innerHTML='<h1 style="font-size:19px">👤 حسابي</h1>'+
+    '<div class="card"><b>'+esc(m.name)+'</b> — '+esc(m.job_title||RN[m.role]||"")+'<br><span class="mute">'+esc(m.phone)+(m.phone2?' · '+esc(m.phone2):'')+'</span>'+
+    (m.address?'<br><span class="mute">📍 '+esc(m.address)+'</span>':'')+
+    '<p class="mute" style="font-size:12px;margin:8px 0 0">الاسم والعنوان والمسمى بتتعدّل من الإدارة فقط.</p></div>'+
+    '<div class="card"><h2>🔑 تغيير كلمة السر</h2><p class="mute" style="font-size:12px">كلمة السر ليك أنت بس، ولا أحد في الإدارة يقدر يشوفها.</p>'+
+    '<input id="meOld" type="password" placeholder="كلمة السر الحالية">'+
+    '<input id="meNew" type="password" placeholder="كلمة السر الجديدة (6 أحرف على الأقل)">'+
+    '<input id="meNew2" type="password" placeholder="أعد كتابة كلمة السر الجديدة">'+
+    '<button class="big" id="meSave">حفظ</button><p id="meErr" style="color:var(--t)"></p></div>';
+}
+
 /* ---------- cash custody (delivery: my status / finance+admin: per-order collection) ---------- */
 var CASH={mine:null,pending:null,overview:null,orders:null,sel:{}};
+var ERN={mine:null,sum:null};
 function cashLoad(){
   if(ROLE==="delivery"){
     apiCall("GET","/cash/my-status").then(function(r){CASH.mine=r;cashV()}).catch(function(){});
+    apiCall("GET","/courier/earnings").then(function(r){ERN.mine=r;cashV()}).catch(function(){});
   }else if(ROLE==="finance"||ROLE==="admin"){
-    Promise.all([
+    var jobs=[
       apiCall("GET","/cash/pending").then(function(r){CASH.pending=r}),
-      apiCall("GET","/cash/overview").then(function(r){CASH.overview=r}),
-      apiCall("GET","/cash/orders").then(function(r){CASH.orders=(r&&r.orders)||[]})
-    ]).then(cashV).catch(function(){});
+      apiCall("GET","/cash/overview").then(function(r){CASH.overview=r})
+    ];
+    jobs.push(apiCall("GET","/earnings/summary").then(function(r){ERN.sum=r}).catch(function(){ERN.sum={couriers:[],payouts:[],total_owed:0}}));
+    if(ROLE==="finance")jobs.push(apiCall("GET","/cash/orders").then(function(r){CASH.orders=(r&&r.orders)||[]}));
+    else CASH.orders=[];
+    Promise.all(jobs).then(cashV).catch(function(){});
   }
+}
+
+/* ---------- courier earnings: pay = the delivery fee of the zone he delivered to ---------- */
+var REASON_TXT={delivered:"تسليم",cancelled_after_departure:"إلغاء بعد خروجك (كامل)"};
+function earnMineCard(){
+  var e=ERN.mine;if(!e)return '';
+  var rows=(e.rows||[]).slice(0,10).map(function(r){
+    return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>#'+r.order_id+(r.zone_name?' · '+esc(r.zone_name):'')+' <span class="mute">('+(REASON_TXT[r.reason]||r.reason)+')</span></span><b>'+r.amount+' ج.م'+(r.paid_at?' ✅':'')+'</b></div>';
+  }).join('');
+  return '<div class="card"><b>🛵 أجري من التوصيل</b>'+
+    '<div style="display:flex;justify-content:space-between;margin-top:8px"><span>مستحق لك لسه</span><b style="font-size:18px">'+e.owed+' ج.م</b></div>'+
+    '<div class="mute" style="margin-top:2px">عن '+e.owed_count+' أوردر · النهاردة '+e.today+' ج.م · اتدفع لك قبل كده '+e.paid+' ج.م</div>'+
+    '<p class="mute" style="margin:8px 0 0">أجرك عن كل أوردر = سعر توصيل المنطقة اللي سلّمت فيها.</p>'+rows+'</div>';
+}
+function earnSumCard(){
+  var s=ERN.sum;if(!s)return '';
+  var rows=(s.couriers||[]).length?s.couriers.map(function(c){
+    return '<div class="card row"><div><b>'+esc(c.name)+'</b><br><span class="mute">'+c.owed_count+' أوردر · اتدفع له '+c.paid+' ج.م</span></div>'+
+      '<div style="text-align:left"><b>'+c.owed+' ج.م</b>'+(c.owed>0&&(ROLE==="finance"||ROLE==="admin")?'<br><button class="chip" data-earnpay="'+c.id+'" data-earnamt="'+c.owed+'" data-earnname="'+esc(c.name)+'">تسجيل الدفع</button>':'')+'</div></div>';
+  }).join(''):'<p class="mute">مفيش أجور متسجلة لسه.</p>';
+  var pays=(s.payouts||[]).slice(0,8).map(function(p){return '<div class="mute" style="padding:3px 0">'+dt(p.paid_at)+' · '+esc(p.courier_name)+' · '+p.amount+' ج.م ('+p.orders_count+' أوردر)'+(p.paid_by_name?' · '+esc(p.paid_by_name):'')+'</div>'}).join('');
+  return '<h1 style="font-size:17px">🛵 أجور المناديب (مستحق: '+s.total_owed+' ج.م)</h1>'+rows+(pays?'<div class="card"><b>آخر الدفعات</b>'+pays+'</div>':'');
 }
 function cashOrderRow(o){
   var st=o.cash_status,badge=st==="received"?'<span style="color:#1b7a3d">✅ تم الاستلام</span>':st==="not_received"?'<span style="color:var(--t)">❌ ما اتسلمش</span>':'<span class="mute">⏳ لم يُحسم</span>';
@@ -224,15 +382,18 @@ function cashV(){
     }else{
       html+='<div class="card"><b>لا يوجد مبلغ مستحق عليك حالياً 🎉</b></div>';
     }
+    html+=earnMineCard();
     el.innerHTML=html;
   }else{
     var ov=CASH.overview,pd=CASH.pending,os=CASH.orders;
     if(!ov||!pd||!os){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
-    var html='<h1 style="font-size:19px">💵 التحصيل من الدليفرية</h1>';
+    var html='<h1 style="font-size:19px">'+(ROLE==="admin"?'💵 توريدات المدير المالي':'💵 التحصيل من الدليفرية')+'</h1>'+earnSumCard();
+    if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية للمدير المالي فقط، حتى تقدر تراجعه. من هنا بس بتؤكد استلام التوريدات اللي المدير المالي بيسلّمها لك.</span></div>';
     if(ROLE==="finance"){
       html+='<div class="card"><b>🏦 المدير المالي — الرصيد في عهدتك: '+ov.my_custody+' ج.م</b>'+
         (ov.my_custody>0?'<br><button class="big" id="cashHandover" style="margin-top:10px">📤 توريد الرصيد للإدارة</button>':'')+'</div>';
     }
+    if(ROLE==="finance"){
     var by={};os.forEach(function(o){(by[o.courier_id]=by[o.courier_id]||{name:o.courier_name,rows:[]}).rows.push(o)});
     var ids=Object.keys(by);
     var selCount=Object.keys(CASH.sel).filter(function(k){return CASH.sel[k]}).length;
@@ -244,6 +405,7 @@ function cashV(){
       var g=by[id],pend=g.rows.filter(function(o){return o.cash_status!=="received"}).reduce(function(a,o){return a+Number(o.total)},0);
       html+='<h2 style="font-size:15px;margin:14px 0 6px">'+esc(g.name)+' — المتبقي: '+Math.round(pend*100)/100+' ج.م</h2>'+g.rows.map(cashOrderRow).join('');
     });
+    }
     if(ROLE==="admin"){
       html+='<h2 style="font-size:15px;margin:18px 0 6px">توريدات من المدير المالي بانتظار تأكيدك ('+pd.finance_handovers.length+')</h2>'+
         (pd.finance_handovers.length?pd.finance_handovers.map(function(e){return '<div class="card"><b>'+esc(e.from_name)+'</b> — '+e.amount+' ج.م<br><span class="mute">أُبلغ بالتوريد: '+dt(e.reported_at)+'</span><br><button class="big" style="margin-top:8px" data-cashconf="'+e.id+'">✅ تأكيد الاستلام</button></div>'}).join(''):'<p class="mute">لا يوجد توريدات بانتظار التأكيد.</p>');
@@ -256,21 +418,32 @@ function cashV(){
 var CR=null;
 function crLoad(){apiCall("GET","/couriers").then(function(r){CR=(r&&r.couriers)?r:null;crV()}).catch(function(){})}
 function crColSel(id,cur,cols){
-  return '<select data-crcol="'+id+'">'+'<option value="">— أي مدير مالي —</option>'+cols.map(function(c){return '<option value="'+c.id+'"'+(c.id===cur?' selected':'')+'>'+esc(c.name)+' ('+(c.role==="finance"?"مدير مالي":"إدارة")+')</option>'}).join('')+'</select>';
+  return '<select data-crcol="'+id+'">'+'<option value="">— أي مدير مالي —</option>'+cols.map(function(c){return '<option value="'+c.id+'"'+(c.id===cur?' selected':'')+'>'+esc(c.name)+' ('+"مدير مالي"+')</option>'}).join('')+'</select>';
 }
 function crV(){
   var el=$("couriers");if(!el)return;
   if(!CR){el.innerHTML='<h1 style="font-size:19px">🛵 الدليفرية</h1><p class="mute">جارِ التحميل...</p>';return}
   var html='<h1 style="font-size:19px">🛵 إدارة الدليفرية</h1>';
   html+=CR.couriers.length?CR.couriers.map(function(c){
-    return '<div class="card"><b>'+esc(c.name)+'</b> · <span class="mute">'+esc(c.phone)+(c.active?'':' · موقوف')+'</span><br>'+
+    return '<div class="card"><b>'+esc(c.name)+'</b> · <span class="mute">'+esc(c.phone)+(c.phone2?' · '+esc(c.phone2):'')+(c.active?'':' · موقوف')+'</span><br>'+
+      (c.address?'<span class="mute">📍 '+esc(c.address)+'</span><br>':'')+
       '<span class="mute">المستحق عليه: '+c.owed+' ج.م</span>'+
+      '<details style="margin-top:8px"><summary class="mute" style="cursor:pointer">✏️ تعديل البيانات</summary>'+
+      '<input id="ce_n_'+c.id+'" placeholder="الاسم" value="'+esc(c.name)+'" disabled>'+
+      '<input id="ce_p_'+c.id+'" placeholder="رقم الموبايل" inputmode="tel" value="'+esc(c.phone)+'">'+
+      '<input id="ce_p2_'+c.id+'" placeholder="رقم موبايل بديل" inputmode="tel" value="'+esc(c.phone2||"")+'">'+
+      '<input id="ce_a_'+c.id+'" placeholder="العنوان" value="'+esc(c.address||"")+'">'+
+      '<button class="big" data-cesave="'+c.id+'">حفظ التعديلات</button></details>'+
       '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل منه</label>'+
       '<select data-crmode="'+c.id+'">'+['per_order','daily','weekly','suspended'].map(function(k){return '<option value="'+k+'"'+(c.settlement_mode===k?' selected':'')+'>'+({per_order:"أوردر بأوردر",daily:"يوم بيوم",weekly:"أسبوع بأسبوع",suspended:"إيقاف التعامل"})[k]+'</option>'}).join('')+'</select>'+
-      '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+'</div>';
+      '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+
+      (c.has_history
+        ?'<button class="chip" style="margin-top:10px;color:var(--t)" data-crtoggle="'+c.id+':'+(c.active?'0':'1')+'">'+(c.active?'⏸ إيقاف الدليفري':'▶️ إعادة تفعيل')+'</button><p class="mute" style="font-size:12px">لا يمكن حذفه لأن له تاريخ تشغيل (يمكن إيقافه فقط).</p>'
+        :'<button class="chip" style="margin-top:10px;color:var(--t)" data-crdelete="'+c.id+'">🗑 حذف الدليفري</button>')+
+      '</div>';
   }).join(''):'<p class="mute">لا يوجد دليفرية بعد.</p>';
   html+='<div class="card"><h2>إضافة دليفري جديد</h2>'+
-    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crW" type="password" placeholder="كلمة السر (6 أحرف على الأقل)">'+
+    '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel"><input id="crA" placeholder="العنوان"><p class="mute" style="font-size:12px">🔒 الدليفري بيحدّد كلمة سره بنفسه بكود تفعيل بيوصله.</p>'+
     '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل</label>'+
     '<select id="crM"><option value="per_order">أوردر بأوردر</option><option value="daily">يوم بيوم</option><option value="weekly">أسبوع بأسبوع</option><option value="suspended">إيقاف التعامل</option></select>'+
     '<label class="mute" style="display:block;margin-top:8px">المحصِّل (الافتراضي: المدير المالي)</label>'+crColSel("new",null,CR.collectors).replace('data-crcol="new"','id="crC"')+
@@ -446,7 +619,8 @@ var SO={prep:[],del:[]};
 var STN={awaiting_prep:"بانتظار التجهيز",preparing:"جاري التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق",delivered:"تم التسليم"};
 var LOADERR="";
 var ORD_QUERIED={store:false,driver:false};
-function setO(k,r){if(Array.isArray(r)){SO[k]=r;LOADERR=""}else{LOADERR=(r&&(r.message||r.error))||"تعذّر تحميل الطلبات من السيرفر"}}
+var FETCHED=Date.now();
+function setO(k,r){if(Array.isArray(r)){SO[k]=r;FETCHED=Date.now();LOADERR=""}else{LOADERR=(r&&(r.message||r.error))||"تعذّر تحميل الطلبات من السيرفر"}}
 function errBanner(){return LOADERR?'<p style="background:#5a1f1f;color:#fff;padding:10px;border-radius:10px;margin:8px 0">⚠️ '+esc(LOADERR)+' — الأرقام المعروضة قد تكون قديمة.</p>':''}
 function ordLoad(){
   var jobs=[];
@@ -460,6 +634,7 @@ function ordShell(){
     if(ORD_QUERIED.store){ordQuery("store");return}
     $("store").innerHTML='<h1 style="font-size:19px">🧑‍🍳 التجهيز</h1><div class="card"><button class="big" id="storeGo">🔍 استعلم عن الطلبات</button></div>';
   }
+  if(ROLE==="delivery"){courierRefresh();return}
   if(ROLE==="delivery"||ROLE==="admin"){
     if(ORD_QUERIED.driver){ordQuery("driver");return}
     $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1><div class="card"><button class="big" id="driverGo">🔍 استعلم عن الطلبات</button></div>';
@@ -481,15 +656,57 @@ function timesBlock(o){
   if(o.delivered_at)lines.push("تم التسليم: <b>"+dt(o.delivered_at)+"</b>");
   return lines.length?'<div class="times">'+lines.join("<br>")+'</div>':'';
 }
+function slaBadge(o){
+  var s=null,lbl="";
+  if(o.status==="awaiting_prep"||o.status==="preparing"){s=o.prep_remaining_s;lbl="مهلة التجهيز"}
+  else if(o.status==="awaiting_delivery"){s=o.pickup_remaining_s;lbl="مهلة استلام الطلب"}
+  else if(o.status==="on_the_way"){s=o.delivery_remaining_s;lbl="مهلة التوصيل"}
+  if(s===null||s===undefined)return"";
+  var left=Math.round((s-(Date.now()-FETCHED)/1000)/60);
+  if(left<0)return '<p style="color:#fff;background:var(--t);font-weight:700;padding:6px 10px;border-radius:10px;margin:8px 0 0">⚠️ متأخر '+(-left)+' دقيقة — '+lbl+'</p>';
+  return '<p style="background:var(--g2);color:var(--g);font-weight:700;padding:6px 10px;border-radius:10px;margin:8px 0 0">⏱ '+lbl+': متبقي '+left+' دقيقة</p>';
+}
 function ocard(o,k){
   var act=null;
   if(ROLE==="prep"&&k==="prep")act=o.status==="awaiting_prep"?["preparing","▶ بدء التجهيز"]:["awaiting_delivery","✅ انتهاء التجهيز"];
-  if(ROLE==="delivery"&&k==="del")act=o.status==="awaiting_delivery"?["on_the_way","🚚 بدء التوصيل"]:["delivered","💵 تم التسليم وتحصيل النقدية"];
+  if(ROLE==="delivery"&&k==="del")act=o.status==="awaiting_delivery"?null:["delivered","💵 تم التسليم وتحصيل النقدية"];
   return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+' · '+esc(o.customer_phone)+(o.address?'<br>📍 '+esc(o.address):'')+
     '<ul class="items">'+(o.items||[]).map(function(i){return '<li>'+esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+' '+esc(i.unit)+'</li>'}).join('')+'</ul>'+
-    '<b>الإجمالي: '+o.total+' ج.م</b>'+timesBlock(o)+
-    (act?'<button class="big" style="margin-top:8px" data-ost="'+o.id+':'+act[0]+'">'+act[1]+'</button>':(ROLE==="admin"?'<p class="mute" style="margin:6px 0 0">عرض فقط</p>':''))+
+    '<b>الإجمالي: '+o.total+' ج.م</b>'+slaBadge(o)+timesBlock(o)+
+    (act?'<button class="big" style="margin-top:8px" data-ost="'+o.id+':'+act[0]+'">'+act[1]+'</button>':(ROLE==="admin"?'<p class="mute" style="margin:6px 0 0">عرض فقط</p>':(ROLE==="delivery"&&o.status==="awaiting_delivery"?'<p class="mute" style="margin:6px 0 0">⏳ بانتظار مدير التشغيل ليبدأ الرحلة</p>':'')))+
     '</div>';
+}
+
+/* ---------- courier: presence, offers, my trip ---------- */
+var COUR=null;
+function courierRefresh(){
+  Promise.all([
+    apiCall("GET","/courier/me").then(function(r){COUR=(r&&r.state)?r:COUR}),
+    apiCall("GET","/orders/staff/delivery").then(function(r){setO("del",r)})
+  ]).then(ordV).catch(function(){});
+}
+function courierBlock(){
+  if(ROLE!=="delivery"||!COUR)return'';
+  var ST={off:["⚪","خارج الدوام"],free:["🟢","فاضي في المحل"],returning:["🟡","راجع للمحل"],on_trip:["🔵","في رحلة"]}[COUR.state]||["",""];
+  var h='<div class="card"><b>'+ST[0]+' حالتك: '+ST[1]+'</b>';
+  if(COUR.offer){
+    h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>🛵 اتعيّن لك أوردر — اضغط "تمام" خلال '+Math.max(COUR.offer.remaining_s,0)+' ثانية</b>'+
+      COUR.offer.orders.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.items+' صنف · '+o.total+' ج.م'+(o.address?' · 📍 '+esc(o.address):'')+'</div>'}).join('')+
+      '<div style="margin-top:10px"><button class="big" style="width:100%" data-offacc="'+COUR.offer.id+'">✅ تمام</button></div></div>';
+  }
+  if(COUR.to_return&&COUR.to_return.length)h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>↩️ أوردر اتلغى ومعاك — رجّعه المحل</b>'+COUR.to_return.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.total+' ج.م</div>'}).join('')+'<button class="big" id="cReturned" style="width:100%;margin-top:8px">📦 رجّعت الأوردر</button><p class="mute" style="margin:6px 0 0">بعد ما تضغط، مدير التشغيل بيأكد الاستلام وبعدها تقدر تضغط "وصلت المحل".</p></div>';
+  if(COUR.rescue&&COUR.rescue.length)h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>🚨 روح استلم أوردرات من مندوب عطلان</b>'+COUR.rescue.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.total+' ج.م'+(o.address?' · 📍 '+esc(o.address):'')+'</div>'}).join('')+(COUR.rescue[0].breakdown_lat?'<a class="chip" style="display:inline-block;margin-top:8px" target="_blank" href="https://maps.google.com/?q='+COUR.rescue[0].breakdown_lat+','+COUR.rescue[0].breakdown_lng+'">📍 افتح موقع العطل</a>':'')+'<button class="big" id="cRescuePicked" style="width:100%;margin-top:8px">✅ استلمت الأوردرات</button></div>';
+  if(COUR.trip&&COUR.trip.status==="assigned")h+='<p style="margin:10px 0 0;font-weight:600">📦 اتعيّنت لرحلة #'+COUR.trip.id+' — روح المحل واضغط "وصلت المحل". لما تستلم الأوردر اضغط "استلمت الأوردر" (أو مدير التشغيل يضغطها) وساعتها الرحلة تبدأ.</p>'+(COUR.state==="free"?'<button class="big" id="cReceived" style="width:100%;margin-top:8px">📦 استلمت الأوردر وماشي</button>':'');
+  var btns='';
+  if(COUR.state!=="on_trip"&&COUR.state!=="free"&&!(COUR.to_return&&COUR.to_return.length))btns+='<button class="big" id="cArrive" style="flex:1">📍 وصلت المحل</button>';
+  if(COUR.state==="free"&&!(COUR.trip&&COUR.trip.status==="assigned"))btns+='<span class="mute" style="align-self:center;flex:1">أنت فاضي وبتستنى أوردر.</span>';
+  if(COUR.state==="free"||COUR.state==="returning")btns+='<button class="chip" id="cOff">🏠 انصراف</button>';
+  if(btns)h+='<div style="display:flex;gap:8px;margin-top:10px">'+btns+'</div>';
+  if(COUR.state==="on_trip")h+='<p class="mute" style="margin:10px 0 0">لما تخلّص كل أوردرات الرحلة، اضغط "وصلت المحل" عشان تبقى فاضي.</p><button class="chip" id="cBreak" style="margin-top:8px">🚨 عطلت العربية / الموتوسيكل</button>';
+  return h+'</div>';
+}
+function courierAct(url,okMsg){
+  apiCall("POST",url).then(function(r){toast(r&&r.ok?okMsg:((r&&r.message)||"تعذّر التنفيذ"));courierRefresh()}).catch(function(){toast("تعذّر الاتصال")});
 }
 function ordV(){
   if(ROLE==="prep"||ROLE==="admin"){
@@ -501,44 +718,166 @@ function ordV(){
   }
   if(ROLE==="delivery"||ROLE==="admin"){
     var wd=SO.del.filter(function(o){return o.status==="awaiting_delivery"}),od=SO.del.filter(function(o){return o.status==="on_the_way"}),dd=SO.del.filter(function(o){return o.status==="delivered"});
-    $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1>'+errBanner()+
-      '<div class="card"><button class="chip" id="driverGo">🔄 إعادة الاستعلام</button></div>'+
+    $("driver").innerHTML='<h1 style="font-size:19px">🚚 التوصيل</h1>'+errBanner()+courierBlock()+
+      (ROLE==="delivery"?'<div class="card"><button class="chip" id="driverGo">🔄 تحديث</button></div>':'<div class="card"><button class="chip" id="driverGo">🔄 إعادة الاستعلام</button></div>')+
       '<h2 style="font-size:15px;margin:10px 0 6px">⏳ بانتظار التوصيل ('+wd.length+')</h2>'+(wd.length?wd.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات بانتظار التوصيل.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">🛵 في الطريق ('+od.length+')</h2>'+(od.length?od.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات في الطريق حاليًا.</p>')+
       '<h2 style="font-size:15px;margin:16px 0 6px">✅ تم التسليم والدفع ('+dd.length+')</h2>'+(dd.length?dd.map(function(o){return ocard(o,"del")}).join(""):'<p class="mute">لا توجد طلبات مُسلَّمة بعد.</p>');
   }
 }
 
-/* ---------- delayed orders report (admin only) ---------- */
-var DLY=null;
+/* ---------- delays report + SLA settings (admin / ops) ---------- */
+var DLY=null,SLAS=null,DLY_DONE=false,DLY_LATE=true,SLA_MSG="";
+var STG={prep:"التجهيز",pickup:"انتظار الاستلام",delivery:"التوصيل",queue:"طابور التجهيز"};
 function delayedShell(){
-  $("delayed").innerHTML='<h1 style="font-size:19px">⏰ الطلبات المتأخرة</h1>'+
-    '<p class="mute" style="margin:0 0 10px">طلبات تأخرت أكثر من 30 دقيقة. حدّد المربع لاستعلام الطلبات المتأخرة التي تم تسليمها بالفعل، أو اتركه فارغًا لاستعلام المتأخرة التي لم تُسلَّم بعد.</p>'+
-    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="dlyDone" style="width:18px;height:18px"> تم تسليمها</label>'+
-    '<button class="big" id="dlyGo" style="margin-top:10px">🔍 استعلم</button></div>'+
-    delayedResultBlock();
+  DLY=null;
+  apiCall("GET","/sla/settings").then(function(r){SLAS=(r&&r.total)?r:null;delayedRender()}).catch(function(){delayedRender()});
+}
+function slaSettingsBlock(){
+  if(!SLAS)return'';
+  var adm=ROLE==="admin";
+  function inp(id,v,dis){return '<input type="number" min="1" max="600" id="'+id+'" value="'+v+'"'+(dis?' disabled':'')+' style="width:80px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
+  return '<div class="card"><b>⚙️ مدد الطلب (بالدقائق)</b>'+
+    '<p class="mute" style="margin:4px 0 10px">السقف الكلي يحدده المدير، ومدير التشغيل يوزّعه بين التجهيز والتوصيل (مجموعهما لا يزيد عن السقف).</p>'+
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center">'+
+    '<span>السقف الكلي للطلب</span>'+inp("slaTotal",SLAS.total,!adm)+
+    '<span>مدة التجهيز</span>'+inp("slaPrep",SLAS.prep,false)+
+    '<span>مدة التوصيل</span>'+inp("slaDel",SLAS.delivery,false)+
+    '<span>مهلة استلام المندوب للطلب الجاهز</span>'+inp("slaPick",SLAS.pickup,false)+
+    '</div>'+(SLA_MSG?'<p style="margin:8px 0 0;font-weight:600">'+esc(SLA_MSG)+'</p>':'')+
+    '<div style="display:flex;gap:8px;margin-top:10px">'+(adm?'<button class="chip" id="slaSaveTotal">حفظ السقف</button>':'')+'<button class="big" id="slaSaveSplit" style="flex:1">حفظ التوزيع</button></div></div>';
+}
+function delayedRender(){
+  $("delayed").innerHTML='<h1 style="font-size:19px">⏰ المدد والتأخير</h1>'+slaSettingsBlock()+
+    '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="dlyDone" style="width:18px;height:18px"'+(DLY_DONE?' checked':'')+'> تم تسليمها (آخر 7 أيام)</label>'+
+    '<label style="display:flex;align-items:center;gap:8px;font-weight:600;margin-top:8px"><input type="checkbox" id="dlyLate" style="width:18px;height:18px"'+(DLY_LATE?' checked':'')+'> المتأخرة فقط</label>'+
+    '<button class="big" id="dlyGo" style="margin-top:10px">🔍 استعلم</button></div>'+delayedResultBlock();
 }
 function delayedResultBlock(){
   if(DLY===null)return'';
-  return (Array.isArray(DLY)&&DLY.length?DLY.map(function(o){
-      var mins=o.delivered_at?Math.floor((new Date(o.delivered_at).getTime()-new Date(o.created_at).getTime())/60000):Math.floor((Date.now()-new Date(o.created_at).getTime())/60000);
-      var label=o.status==="delivered"?"تأخّر عن التسليم ":"متأخر منذ ";
-      return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+' · '+esc(o.customer_phone)+(o.address?'<br>📍 '+esc(o.address):'')+
-        '<p style="color:var(--t);font-weight:700;margin:8px 0 0">'+label+mins+' دقيقة</p>'+timesBlock(o)+'</div>';
-    }).join(""):'<p class="mute">لا توجد نتائج لهذا الاستعلام 🎉</p>');
+  if(!DLY.length)return'<p class="mute">لا توجد نتائج لهذا الاستعلام 🎉</p>';
+  return DLY.map(function(o){
+    var d=(o.delays||[]).map(function(x){
+      return '<p style="color:var(--t);font-weight:700;margin:6px 0 0">⚠️ '+STG[x.stage]+': تأخير '+x.minutes+' دقيقة — المسؤول: '+esc(x.party_name)+'</p>'+
+        (x.ops_accountable?'<p class="mute" style="margin:2px 0 0">🗂️ مدير التشغيل مسؤول إداريًا (كان يقدر يتدخل)</p>':'');
+    }).join('');
+    var line=function(t,e){return e&&e.expected_min!==null?t+': المتوقع '+e.expected_min+' د · الفعلي '+e.actual_min+' د<br>':''};
+    return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+' · '+esc(o.customer_name)+
+      (o.assignment_mode==="manual"?' <span class="mute">(تجهيز: تعيين يدوي)</span>':'')+(o.delivery_assignment_mode==="manual"?' <span class="mute">(توصيل: تعيين يدوي)</span>':'')+(o.ops_intervened?' <b style="color:var(--t)">· تدخّل مدير التشغيل</b>':'')+
+      '<div class="times" style="margin-top:6px">'+line("التجهيز",o.prep)+line("التوصيل",o.delivery)+
+      (o.queue_wait_min?'انتظار الطابور: '+o.queue_wait_min+' د<br>':'')+(o.handover_wait_min!==null&&o.handover_wait_min!==undefined?'انتظار التسليم في المحل (من وصول المندوب لحد الاستلام): '+o.handover_wait_min+' د — <span class="mute">مش محسوب على المندوب</span><br>':'')+'الإجمالي: '+o.total_actual_min+' د</div>'+(d||'<p class="mute" style="margin:6px 0 0">في الميعاد ✅</p>')+'</div>';
+  }).join('');
 }
 function delayedQuery(){
-  var done=$("dlyDone")&&$("dlyDone").checked;
-  apiCall("GET","/orders/delayed?delivered="+(done?"1":"0")).then(function(r){
-    DLY=Array.isArray(r)?r:[];
-    $("delayed").innerHTML='<h1 style="font-size:19px">⏰ الطلبات المتأخرة</h1>'+
-      '<p class="mute" style="margin:0 0 10px">طلبات تأخرت أكثر من 30 دقيقة. حدّد المربع لاستعلام الطلبات المتأخرة التي تم تسليمها بالفعل، أو اتركه فارغًا لاستعلام المتأخرة التي لم تُسلَّم بعد.</p>'+
-      '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="dlyDone" style="width:18px;height:18px"'+(done?' checked':'')+'> تم تسليمها</label>'+
-      '<button class="big" id="dlyGo" style="margin-top:10px">🔍 استعلم</button></div>'+
-      delayedResultBlock();
-  }).catch(function(){DLY=[];delayedShell()});
+  DLY_DONE=!!($("dlyDone")&&$("dlyDone").checked);DLY_LATE=!!($("dlyLate")&&$("dlyLate").checked);
+  apiCall("GET","/orders/sla?scope="+(DLY_DONE?"done":"open")+"&days=7"+(DLY_LATE?"&late=1":"")).then(function(r){
+    DLY=Array.isArray(r)?r:[];delayedRender();
+  }).catch(function(){DLY=[];delayedRender()});
+}
+function slaSave(which){
+  var req=which==="total"
+    ?apiCall("PUT","/sla/total",{total_max_min:Number($("slaTotal").value)})
+    :apiCall("PUT","/sla/split",{prep_min:Number($("slaPrep").value),delivery_min:Number($("slaDel").value),pickup_min:Number($("slaPick").value)});
+  req.then(function(r){
+    if(r&&r.ok){SLAS=r.settings;SLA_MSG="✅ تم الحفظ"}else{SLA_MSG="⚠️ "+((r&&r.message)||"تعذّر الحفظ")}
+    delayedRender();
+  }).catch(function(){SLA_MSG="⚠️ تعذّر الاتصال بالسيرفر";delayedRender()});
 }
 
+
+/* ---------- cancellations + manual assignments (ops/admin) ---------- */
+var AUD={set:null,canc:null,asg:null,msg:"",days:7};
+var STG_C={queued:"في الطابور",prep_assigned:"معيّن للتجهيز",preparing:"جاري التجهيز",ready:"جاهز بانتظار المندوب",departed:"بعد خروج المندوب"};
+var KIND_A={prep:"تجهيز",delivery:"توصيل",merge:"دمج رحلات",split:"فصل أوردر"};
+function auditShell(){
+  apiCall("GET","/cancel/settings").then(function(r){AUD.set=(r&&r.cancel_grace_min!==undefined)?r:null;auditRender()}).catch(function(){auditRender()});
+}
+function auditSettingsBlock(){
+  if(!AUD.set)return'';
+  var S=AUD.set;
+  function inp(id,v){return '<input type="number" min="0" step="any" id="'+id+'" value="'+v+'" style="width:80px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
+  return '<div class="card"><b>⚙️ إعدادات تكلفة الإلغاء بعد خروج المندوب</b>'+
+    '<p class="mute" style="margin:4px 0 10px">العميل ما بيدفعش حاجة لو الأوردر اتلغى. الشركة هي اللي بتتحمّل جزء من قيمة التوصيل، حسب الوقت اللي فات من خروج المندوب.</p>'+
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center">'+
+    '<span>المهلة الأولى (دقيقة من خروج المندوب)</span>'+inp("acGrace",S.cancel_grace_min)+
+    '<span>نسبة تتحملها الشركة خلال المهلة (%)</span>'+inp("acEarly",S.cancel_early_share_pct)+
+    '<span>نسبة تتحملها الشركة بعد المهلة (%)</span>'+inp("acLate",S.cancel_late_share_pct)+
+    '<span>قيمة التوصيل المعتمدة لو التوصيل كان مجاني (ج.م)</span>'+inp("acStd",S.standard_delivery_fee)+
+    '</div>'+(AUD.msg?'<p style="margin:8px 0 0;font-weight:600">'+esc(AUD.msg)+'</p>':'')+
+    '<button class="big" id="acSave" style="margin-top:10px">حفظ</button></div>';
+}
+function auditRender(){
+  var sel='<select id="audDays" style="padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'+[7,30,90].map(function(d){return '<option value="'+d+'"'+(AUD.days===d?' selected':'')+'>آخر '+d+' يوم</option>'}).join('')+'</select>';
+  var h='<h1 style="font-size:19px">❌ الإلغاءات والتعيين اليدوي</h1>'+auditSettingsBlock()+
+    '<div class="card"><div style="display:flex;gap:8px;align-items:center">'+sel+'</div>'+
+    '<div style="display:flex;gap:8px;margin-top:10px"><button class="big" id="audCanc" style="flex:1">❌ الإلغاءات</button><button class="big" id="audAsg" style="flex:1">🗂️ التعيين اليدوي</button></div></div>';
+  if(AUD.canc){
+    h+='<h2 style="font-size:15px;margin:12px 0 6px">❌ الإلغاءات — تكلفة على الشركة: <b>'+AUD.canc.total_company_cost+' ج.م</b> · أجور مناديب مستحقة: <b>'+(AUD.canc.total_courier_fees||0)+' ج.م</b></h2>';
+    h+=AUD.canc.rows.length?AUD.canc.rows.map(function(x){
+      return '<div class="card"><b>طلب #'+x.order_id+'</b> — '+(STG_C[x.stage]||x.stage)+' · '+esc(x.customer_name)+'<br>'+
+        '<span class="mute">اتلغى بواسطة: '+esc(x.cancelled_by_name||"؟")+' · '+dt(x.cancelled_at)+'</span>'+
+        (x.courier_name?'<br><span class="mute">المندوب: '+esc(x.courier_name)+'</span>':'')+
+        (x.prep_name?'<br><span class="mute">موظف التجهيز: '+esc(x.prep_name)+'</span>':'')+
+        (x.reason?'<br><span class="mute">السبب: '+esc(x.reason)+'</span>':'')+
+        (x.stage==="departed"?'<br><span class="mute">'+(x.returned_at?'↩️ رجع المحل واتأكد استلامه '+dt(x.returned_at):'↩️ لسه ما اتأكدش استلامه في المحل')+' · أجرة المندوب المستحقة: '+x.courier_fee_owed+' ج.م</span><br><b style="color:var(--t)">تكلفة على الشركة: '+x.company_cost+' ج.م</b> <span class="mute">('+x.company_share_pct+'% من قيمة التوصيل'+(x.minutes_since_departure!==null?' · بعد '+x.minutes_since_departure+' د من الخروج':'')+')</span>':'')+'</div>';
+    }).join(''):'<p class="mute">لا توجد إلغاءات في الفترة دي.</p>';
+  }
+  if(AUD.asg){
+    h+='<h2 style="font-size:15px;margin:12px 0 6px">🗂️ التعيين اليدوي</h2>';
+    h+=AUD.asg.rows.length?AUD.asg.rows.map(function(x){
+      var ids=(x.order_ids||[]).map(function(i){return '#'+i}).join(' ، ');
+      return '<div class="card"><b>'+(KIND_A[x.kind]||x.kind)+'</b> — '+esc(x.actor_name)+' <span class="mute">· '+dt(x.at)+'</span><br>'+
+        'أوردر: '+(ids||"-")+'<br>'+
+        (x.kind==="prep"||x.kind==="delivery"?'<span class="mute">من: '+esc(x.from_name||"بدون")+'  ←  إلى: <b>'+esc(x.to_name||"بدون")+'</b></span>':'<span class="mute">'+esc(x.to_name||"")+'</span>')+'</div>';
+    }).join(''):'<p class="mute">لا توجد تعيينات يدوية في الفترة دي.</p>';
+  }
+  $("audit").innerHTML=h;
+}
+function auditSave(){
+  apiCall("PUT","/cancel/settings",{cancel_grace_min:Number($("acGrace").value),cancel_early_share_pct:Number($("acEarly").value),cancel_late_share_pct:Number($("acLate").value),standard_delivery_fee:Number($("acStd").value)}).then(function(r){
+    if(r&&r.ok){AUD.set=r.settings;AUD.msg="✅ تم الحفظ"}else{AUD.msg="⚠️ "+((r&&r.message)||"تعذّر الحفظ")}
+    auditRender();
+  }).catch(function(){AUD.msg="⚠️ تعذّر الاتصال بالسيرفر";auditRender()});
+}
+function auditLoad(which){
+  AUD.days=Number($("audDays").value)||7;
+  if(which==="canc")apiCall("GET","/orders/cancellations?days="+AUD.days).then(function(r){AUD.canc=(r&&r.rows)?r:{rows:[],total_company_cost:0};auditRender()}).catch(function(){toast("تعذّر الاتصال")});
+  else apiCall("GET","/assignments/manual?days="+AUD.days).then(function(r){AUD.asg=(r&&r.rows)?r:{rows:[]};auditRender()}).catch(function(){toast("تعذّر الاتصال")});
+}
+
+
+/* ---------- delivery zones (ops / admin) ---------- */
+var ZN={rows:null,edit:0,msg:""};
+function zonesLoad(){
+  apiCall("GET","/zones/all").then(function(r){ZN.rows=(r&&r.zones)?r.zones:[];zonesRender()}).catch(function(){ZN.rows=[];zonesRender()});
+}
+function zonesRender(){
+  var inp='padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)';
+  var cur=ZN.edit?ZN.rows.find(function(z){return z.id===ZN.edit}):null;
+  var h='<h1 style="font-size:19px">📍 مناطق التوصيل</h1>'+
+    '<p class="mute" style="margin:0 0 10px">العميل بيختار منطقته من القايمة دي، والنظام بيحسب سعر التوصيل منها لحظة تأكيد الطلب ويثبّته. أي عميل منطقته مش هنا (أو متقفلة) بيتقاله إنها خارج النطاق.</p>'+
+    '<div class="card"><b>'+(cur?'✏️ تعديل منطقة':'➕ إضافة منطقة')+'</b>'+
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px">'+
+    '<input id="znName" placeholder="اسم المنطقة / الحي" value="'+esc(cur?cur.name:"")+'" style="'+inp+'">'+
+    '<input id="znFee" type="number" min="0" step="any" placeholder="سعر التوصيل" value="'+(cur?cur.fee:"")+'" style="width:110px;'+inp+'"></div>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="znActive" style="width:18px;height:18px"'+(!cur||cur.active?' checked':'')+'> مفعّلة (العميل يقدر يختارها)</label>'+
+    (ZN.msg?'<p style="margin:8px 0 0;font-weight:600">'+esc(ZN.msg)+'</p>':'')+
+    '<div style="display:flex;gap:8px;margin-top:10px"><button class="big" id="znSave" style="flex:1">'+(cur?'حفظ التعديل':'إضافة')+'</button>'+(cur?'<button class="chip" id="znCancel">إلغاء</button>':'')+'</div></div>';
+  h+=ZN.rows&&ZN.rows.length?ZN.rows.map(function(z){
+    return '<div class="card"'+(z.active?'':' style="opacity:.6"')+'><div style="display:flex;justify-content:space-between;align-items:center"><b>'+esc(z.name)+'</b><b>'+z.fee+' ج.م</b></div>'+
+      '<div class="mute" style="margin-top:4px">'+(z.active?'🟢 مفعّلة':'⚪ مقفولة')+'</div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px"><button class="chip" data-znedit="'+z.id+'">تعديل</button><button class="chip" data-zntog="'+z.id+'">'+(z.active?'قفل':'تفعيل')+'</button><button class="chip" data-zndel="'+z.id+'">حذف</button></div></div>';
+  }).join(''):'<p class="mute">مفيش مناطق لسه. أضف أول منطقة من فوق، وإلا العملاء مش هيقدروا يطلبوا.</p>';
+  $("zones").innerHTML=h;
+}
+function zonesSave(){
+  var body={name:$("znName").value.trim(),fee:Number($("znFee").value),active:$("znActive").checked};
+  if(!body.name||!isFinite(body.fee)||$("znFee").value===""){ZN.msg="⚠️ اكتب الاسم والسعر";zonesRender();return}
+  var req=ZN.edit?apiCall("PUT","/zones/"+ZN.edit,body):apiCall("POST","/zones",body);
+  req.then(function(r){
+    if(r&&r.ok){ZN.msg="✅ تم الحفظ";ZN.edit=0;zonesLoad()}else{ZN.msg="⚠️ "+((r&&r.message)||"تعذّر الحفظ");zonesRender()}
+  }).catch(function(){ZN.msg="⚠️ تعذّر الاتصال";zonesRender()});
+}
 
 /* ---------- auth ---------- */
 function startApp(){
@@ -560,7 +899,7 @@ function startApp(){
   }
   var first=(NAV[ROLE]||[["store"]])[0][0];
   go(first);
-  if(ROLE==="admin")setupPush();
+  if(ROLE==="admin"||ROLE==="ops"||ROLE==="delivery")setupPush();
 }
 
 /* ---------- push notifications (admin only) ---------- */
@@ -589,9 +928,24 @@ function setupPush(){
     if(sub)apiCall("POST","/push/subscribe",{subscription:sub.toJSON?sub.toJSON():sub}).catch(function(e){console.error("push subscribe api call failed",e)});
   }).catch(function(e){console.error("setupPush failed",e)});
 }
+setInterval(function(){
+  if(document.hidden||!TOK)return;
+  if(ROLE==="delivery"&&CUR_TAB==="driver")courierRefresh();
+  if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops")opsLoad();
+},15000);
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
+  if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
+  if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
+  if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
+  if(t.id==="smsTog"){apiCall("PUT","/settings/sms",{enabled:t.checked}).then(function(r){if(r&&r.ok)SMS_ON=r.enabled;else toast("تعذّر الحفظ");teamV()});return}
+  if(t.dataset&&t.dataset.asg){
+    var ap=t.dataset.asg.split(":"),ab={order_ids:[Number(ap[0])]};
+    ab[ap[1]==="prep"?"prep_staff_id":"delivery_staff_id"]=t.value?Number(t.value):null;
+    apiCall("PATCH","/orders/assign",ab).then(function(r){toast(r&&r.ok?"تم التعيين":((r&&r.message)||"تعذّر التعيين"));opsLoad()}).catch(function(){toast("تعذّر الاتصال")});
+    return;
+  }
   if(t.dataset&&t.dataset.crmode){apiCall("PATCH","/couriers/"+t.dataset.crmode,{settlement_mode:t.value}).then(function(r){if(r&&r.ok){toast("تم حفظ طريقة التحصيل");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")});return}
   if(t.dataset&&t.dataset.crcol){apiCall("PATCH","/couriers/"+t.dataset.crcol,{collector_id:t.value||null}).then(function(r){if(r&&r.ok){toast("تم تغيير المحصِّل");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")});return}
 });
@@ -600,6 +954,7 @@ document.addEventListener("click",function(e){
   if(t.dataset.t){go(t.dataset.t);return}
 
   if(t.id==="aGo"){
+    $("aErr").style.color="";
     var phone=$("aPhone").value.trim(),pass=$("aPass").value;
     if(!phone||!pass){$("aErr").textContent="أدخل رقم الموبايل وكلمة السر";return}
     t.disabled=true;
@@ -662,7 +1017,7 @@ document.addEventListener("click",function(e){
 
   if(t.dataset.ost){
     var q=t.dataset.ost.split(":");t.disabled=true;
-    apiCall("PATCH","/orders/"+q[0]+"/status",{status:q[1]}).then(function(r){if(r.error)toast(r.message||"تعذّر التنفيذ");ordLoad()}).catch(function(){t.disabled=false});
+    apiCall("PATCH","/orders/"+q[0]+"/status",{status:q[1]}).then(function(r){if(r.error)toast(r.message||"تعذّر التنفيذ");if(ROLE==="delivery")courierRefresh();else ordLoad()}).catch(function(){t.disabled=false});
     return;
   }
 
@@ -675,9 +1030,26 @@ document.addEventListener("click",function(e){
     return;
   }
   if(t.id==="crAdd"){
-    var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),password:$("crW").value,settlement_mode:$("crM").value,collector_id:$("crC").value||null};
+    var cb={name:$("crN").value.trim(),phone:$("crP").value.trim(),phone2:$("crP2").value.trim(),address:$("crA").value.trim(),settlement_mode:$("crM").value,collector_id:$("crC").value||null};
     t.disabled=true;
     apiCall("POST","/couriers",cb).then(function(r){t.disabled=false;if(r&&r.ok){toast("تمت إضافة الدليفري");crLoad()}else{$("crErr").textContent=(r&&r.message)||"تعذّرت الإضافة"}}).catch(function(){t.disabled=false});
+    return;
+  }
+  if(t.dataset.cesave){
+    var cid=t.dataset.cesave;
+    var body={phone:$("ce_p_"+cid).value.trim(),phone2:$("ce_p2_"+cid).value.trim(),address:$("ce_a_"+cid).value.trim()};
+    t.disabled=true;
+    apiCall("PATCH","/couriers/"+cid,body).then(function(r){t.disabled=false;if(r&&r.ok){toast("تم حفظ التعديلات");crLoad()}else toast((r&&r.message)||"تعذّر الحفظ")}).catch(function(){t.disabled=false});
+    return;
+  }
+  if(t.dataset.crdelete){
+    if(!confirm("حذف هذا الدليفري نهائياً؟ لا يمكن التراجع."))return;
+    apiCall("DELETE","/couriers/"+t.dataset.crdelete).then(function(r){if(r&&r.ok){toast("تم الحذف");crLoad()}else toast((r&&r.message)||"تعذّر الحذف")});
+    return;
+  }
+  if(t.dataset.crtoggle){
+    var pr=t.dataset.crtoggle.split(":");
+    apiCall("PATCH","/couriers/"+pr[0],{active:pr[1]==="1"}).then(function(r){if(r&&r.ok){toast(pr[1]==="1"?"تم التفعيل":"تم الإيقاف");crLoad()}else toast("تعذّر الحفظ")});
     return;
   }
   if(t.id==="crDelAdd"){apiCall("PUT","/couriers/delegates/"+$("crDelSel").value,{grant:true}).then(function(r){if(r&&r.ok){toast("تم التفويض");crLoad()}else toast("تعذّر التفويض")});return}
@@ -700,16 +1072,69 @@ document.addEventListener("click",function(e){
   if(t.dataset.tg){apiCall("PATCH","/staff/"+t.dataset.tg+"/active").then(teamLoad);return}
   if(t.dataset.te){editId=Number(t.dataset.te);teamV();return}
   if(t.id==="tCan"){editId=0;teamV();return}
+  if(t.dataset.trs){
+    if(!confirm("هيتم إلغاء كلمة السر الحالية لهذا الموظف، وحسابه هيقفل لحد ما يفعّله بكود جديد بيوصله هو. متأكد؟"))return;
+    apiCall("POST","/staff/"+t.dataset.trs+"/reset-password").then(function(r){
+      if(r&&r.ok){toast("تم إلغاء كلمة السر وإرسال كود تفعيل للموظف");teamLoad()}else toast((r&&r.message)||"تعذّرت إعادة التعيين");
+    });
+    return;
+  }
   if(t.id==="tAdd"){
-    var body={name:$("tN").value.trim(),job_title:$("tT").value.trim(),phone:$("tP").value.trim(),password:$("tW").value,role:$("tR").value};
+    var body={name:$("tN").value.trim(),job_title:$("tT").value.trim(),phone:$("tP").value.trim(),phone2:$("tP2").value.trim(),address:$("tA").value.trim(),role:$("tR").value};
     if(body.role==="delivery")body.settlement_mode=$("tSM").value;
-    if(!body.name||!body.phone||(!editId&&body.password.length<6)){$("tErr").textContent="أكمل البيانات (كلمة السر 6 أحرف على الأقل)";return}
+    if(!body.name||!body.phone){$("tErr").textContent="أكمل الاسم ورقم الموبايل";return}
+    var wasEdit=!!editId;
     var req=editId?apiCall("PATCH","/staff/"+editId,body):apiCall("POST","/auth/staff-create",body);
     req.then(function(r){
-      if(r.id||r.ok){toast("تم الحفظ");editId=0;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
+      if(r.id||r.ok){toast(wasEdit?"تم الحفظ":"تمت الإضافة — كود التفعيل راح للموظف نفسه");editId=0;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
     }).catch(function(){$("tErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
   }
+  if(t.id==="aActShow"){$("actCard").style.display="block";t.style.display="none";return}
+  if(t.id==="actBack"){$("actCard").style.display="none";$("aActShow").style.display="";return}
+  if(t.id==="actGo"){
+    var ph=$("actPhone").value.trim(),cd=$("actCode").value.trim(),p1=$("actPass").value,p2=$("actPass2").value;
+    if(!ph||!cd){$("actErr").textContent="أدخل رقم الموبايل وكود التفعيل";return}
+    if(p1.length<6){$("actErr").textContent="كلمة السر 6 أحرف على الأقل";return}
+    if(p1!==p2){$("actErr").textContent="كلمتا السر غير متطابقتين";return}
+    t.disabled=true;
+    apiCall("POST","/auth/staff-activate",{phone:ph,code:cd,password:p1}).then(function(r){
+      t.disabled=false;
+      if(r&&r.ok){$("actCard").style.display="none";$("aActShow").style.display="";$("aPhone").value=ph;$("aPass").value="";$("aErr").style.color="#1b7a3d";$("aErr").textContent="تم التفعيل ✅ سجّل الدخول بكلمة السر الجديدة."}
+      else $("actErr").textContent=(r&&r.message)||"تعذّر التفعيل";
+    }).catch(function(){t.disabled=false;$("actErr").textContent="تعذّر الاتصال بالسيرفر"});
+    return;
+  }
+  if(t.id==="meSave"){
+    var o1=$("meOld").value,n1=$("meNew").value,n2=$("meNew2").value;
+    if(!o1||n1.length<6){$("meErr").textContent="أدخل كلمة السر الحالية والجديدة (6 أحرف على الأقل)";return}
+    if(n1!==n2){$("meErr").textContent="كلمتا السر الجديدتان غير متطابقتين";return}
+    t.disabled=true;
+    apiCall("POST","/staff/me/password",{old_password:o1,new_password:n1}).then(function(r){
+      t.disabled=false;
+      if(r&&r.ok){toast("تم تغيير كلمة السر");meLoad()}else $("meErr").textContent=(r&&r.message)||"تعذّر التغيير";
+    }).catch(function(){t.disabled=false;$("meErr").textContent="تعذّر الاتصال بالسيرفر"});
+    return;
+  }
+  if(t.id==="opsGo"){opsLoad();return}
+  if(t.dataset.tstart){t.disabled=true;apiCall("POST","/trips/"+t.dataset.tstart+"/start").then(function(r){toast(r&&r.ok?"بدأت الرحلة ▶":((r&&r.message)||"تعذّر البدء"));opsLoad()}).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
+  if(t.dataset.tsplit){tripAct("POST","/trips/split",{order_id:Number(t.dataset.tsplit)},"تم فصل الأوردر");return}
+  if(t.id==="tMerge"){var ids=Object.keys(OPS.sel).filter(function(k){return OPS.sel[k]}).map(Number);tripAct("POST","/trips/merge",{trip_ids:ids},"تم دمج الرحلات");return}
+  if(t.dataset.earnpay){
+    if(!confirm("تسجيل دفع "+t.dataset.earnamt+" ج.م للمندوب "+t.dataset.earnname+"؟"))return;
+    t.disabled=true;
+    apiCall("POST","/earnings/pay",{courier_id:Number(t.dataset.earnpay)}).then(function(r){
+      toast(r&&r.ok?("تم تسجيل دفع "+r.amount+" ج.م"):((r&&r.message)||"تعذّر"));cashLoad()
+    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
+  if(t.id==="znSave"){zonesSave();return}
+  if(t.id==="znCancel"){ZN.edit=0;ZN.msg="";zonesRender();return}
+  if(t.dataset.znedit){ZN.edit=Number(t.dataset.znedit);ZN.msg="";zonesRender();window.scrollTo(0,0);return}
+  if(t.dataset.zntog){var zz=ZN.rows.find(function(x){return x.id===Number(t.dataset.zntog)});apiCall("PUT","/zones/"+zz.id,{name:zz.name,fee:zz.fee,active:!zz.active,sort_order:zz.sort_order}).then(function(r){toast(r&&r.ok?"تم":((r&&r.message)||"تعذّر"));zonesLoad()});return}
+  if(t.dataset.zndel){if(!confirm("حذف المنطقة؟ لو عليها طلبات أو عملاء هتتقفل بدل ما تتمسح."))return;apiCall("DELETE","/zones/"+t.dataset.zndel).then(function(r){toast(r&&r.ok?(r.message||"تم الحذف"):((r&&r.message)||"تعذّر"));zonesLoad()});return}
+  if(t.id==="acSave"){auditSave();return}
+  if(t.id==="audCanc"){auditLoad("canc");return}
+  if(t.id==="audAsg"){auditLoad("asg");return}
+  if(t.id==="tsSave"){tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
 
   if(t.dataset.ce){editCid=Number(t.dataset.ce);catV();return}
   if(t.id==="cCan"){editCid=0;catV();return}
@@ -764,8 +1189,23 @@ document.addEventListener("click",function(e){
 
   if(t.id==="lowGo"){lowStockQuery();return}
   if(t.id==="dlyGo"){delayedQuery();return}
+  if(t.id==="slaSaveTotal"){slaSave("total");return}
+  if(t.id==="slaSaveSplit"){slaSave("split");return}
   if(t.id==="storeGo"){ordQuery("store");return}
-  if(t.id==="driverGo"){ordQuery("driver");return}
+  if(t.id==="driverGo"){if(ROLE==="delivery")courierRefresh();else ordQuery("driver");return}
+  if(t.id==="cReceived"){courierAct("/courier/received","تم — الرحلة بدأت ▶");return}
+  if(t.id==="cReturned"){courierAct("/courier/returned","اتبلّغ مدير التشغيل");return}
+  if(t.id==="cRescuePicked"){courierAct("/courier/rescue-picked","تم تسجيل الاستلام ✅");return}
+  if(t.id==="cBreak"){
+    if(!confirm("تأكيد: العربية عطلت؟ هنبعت أقرب مندوب فاضي ياخد منك الأوردرات."))return;
+    var send=function(lat,lng){apiCall("POST","/courier/breakdown",{lat:lat,lng:lng}).then(function(r){toast(r&&r.ok?(r.rescue?"اتبعت "+r.rescue+" ياخد الأوردرات":(r.message||"اتبلّغت الإدارة")):((r&&r.message)||"تعذّر الإبلاغ"));courierRefresh()}).catch(function(){toast("تعذّر الاتصال")})};
+    if(navigator.geolocation)navigator.geolocation.getCurrentPosition(function(p){send(p.coords.latitude,p.coords.longitude)},function(){send(null,null)},{timeout:8000,enableHighAccuracy:true});else send(null,null);
+    return;
+  }
+  if(t.dataset.retok){tripAct("POST","/returns/"+t.dataset.retok+"/confirm",null,"اتأكد الاستلام ورجع المخزون ✅");return}
+  if(t.id==="cArrive"){courierAct("/courier/arrive","تم تسجيل وصولك ✅");return}
+  if(t.id==="cOff"){if(confirm("تأكيد الانصراف؟"))courierAct("/courier/off","تم تسجيل انصرافك");return}
+  if(t.dataset.offacc){courierAct("/trips/offers/"+t.dataset.offacc+"/accept","تم التأكيد ✅");return}
   if(t.id==="shortGo"){shortagesQuery();return}
   if(t.id==="complGo"){complaintsQuery();return}
   if(t.id==="refFlagsGo"){referralFlagsQuery();return}
