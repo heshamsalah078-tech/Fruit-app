@@ -123,7 +123,7 @@ app.use(staffAdmin.router);
 const prepAssign = require('./prepAssign').init({ pool });
 const sla = require('./sla').init({ pool, requireAuth, express });
 app.use(sla.router);
-const cashCustody = require('./cashCustody').init({ pool, requireAuth, express, issueActivation: staffAdmin.issueActivation });
+const cashCustody = require('./cashCustody').init({ pool, requireAuth, express, issueActivation: staffAdmin.issueActivation, activationRequired: staffAdmin.activationRequired, badPassword: staffAdmin.badPassword });
 const trips = require('./trips').init({ pool, requireAuth, express, canTakeDelivery: cashCustody.canTakeDelivery, moveStock, notifyStaff, notifyAdmins });
 app.use(trips.router);
 const cancelPolicy = require('./cancelPolicy').init({ pool, requireAuth, express });
@@ -131,6 +131,7 @@ app.use(cancelPolicy.router);
 const zones = require('./deliveryZones').init({ pool, requireAuth, express });
 app.use(zones.router);
 const earnings = require('./courierEarnings').init({ pool, requireAuth, express });
+const etaCalc = require('./eta').init({ pool });
 app.use(earnings.router);
 app.use(cashCustody.router);
 
@@ -497,9 +498,9 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     const itemsSum = items.reduce((a, it) => a + Number(it.quantity) * Number(it.unit_price), 0);
     const serverTotal = Math.max(Math.round((itemsSum + Number(delivery_fee || 0) - rd.discount) * 100) / 100, 0);
     const orderR = await client.query(
-      `INSERT INTO orders (customer_id, status, delivery_fee, reward_discount, total, payment_status, zone_id, zone_name)
-       VALUES ($1,'awaiting_prep',$2,$3,$4,'due',$5,$6) RETURNING *`,
-      [customer_id, delivery_fee, rd.discount, serverTotal, zr.zone.id, zr.zone.name]
+      `INSERT INTO orders (customer_id, status, delivery_fee, zone_fee, reward_discount, total, payment_status, zone_id, zone_name)
+       VALUES ($1,'awaiting_prep',$2,$7,$3,$4,'due',$5,$6) RETURNING *`,
+      [customer_id, delivery_fee, rd.discount, serverTotal, zr.zone.id, zr.zone.name, zr.zone.fee]
     );
     const order = orderR.rows[0];
     await referral.recordDiscount(client, order.id, customer_id, rd.lines);
@@ -529,6 +530,7 @@ app.get('/orders/customer/:id', requireAuth('customer', 'admin'), async (req, re
     'SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',
     [req.params.id]
   );
+  try { await etaCalc.attach(r.rows); } catch (e) { console.error('eta', e.message); } // the estimate is a nicety: never break the order list
   res.json(r.rows);
 });
 
@@ -754,12 +756,16 @@ app.patch('/orders/:id/cancel', requireAuth('customer', 'admin', 'ops'), async (
     if (dispatched) await earnings.credit(client, order.id, 'cancelled_after_departure');
     await referral.clearOrderRewards(client, order.id);
     if (r.rows[0].trip_id) await trips.refreshTrip(client, r.rows[0].trip_id);
+    let tripOpenLeft = 0;
+    if (dispatched && r.rows[0].trip_id) {
+      tripOpenLeft = (await client.query("SELECT COUNT(*)::int AS n FROM orders WHERE trip_id=$1 AND status NOT IN ('delivered','cancelled')", [r.rows[0].trip_id])).rows[0].n;
+    }
     await client.query('COMMIT');
     prepAssign.kick(); trips.kick();
     if (cancelInfo) {
       const lbl = { queued: 'في الطابور', prep_assigned: 'معيّن للتجهيز', preparing: 'جاري التجهيز', ready: 'جاهز', departed: 'بعد خروج المندوب' }[cancelInfo.stage];
       if (cancelInfo.stage === 'departed' && cancelInfo.courier_id) {
-        notifyStaff([cancelInfo.courier_id], { title: '❌ أوردر اتلغى', body: `الأوردر #${order.id} اتلغى وهو معاك. ارجع بيه المحل واضغط "رجّعت الأوردر". حقّ التوصيل محفوظ لك.`, tag: 'cancel-' + order.id, url: '/staff/#driver' }).catch(() => {});
+        notifyStaff([cancelInfo.courier_id], { title: '❌ أوردر اتلغى', body: `الأوردر #${order.id} اتلغى وهو معاك وشيلناه من رحلتك. اتحسب لك أجره ${cancelInfo.courier_fee_owed} ج.م والشركة هتحاسبك عليه. ` + (tripOpenLeft > 0 ? `كمّل باقي أوردرات الرحلة، وبعدها رجّع الأوردر الملغي المحل واضغط "رجّعت الأوردر".` : `ارجع بيه المحل واضغط "رجّعت الأوردر"، وبعدها هيتبعتلك أوردر جاهز لو متاح، ولو مفيش هتستنى.`), tag: 'cancel-' + order.id, url: '/staff/#driver' }).catch(() => {});
       } else if ((cancelInfo.stage === 'prep_assigned' || cancelInfo.stage === 'preparing') && cancelInfo.prep_staff_id) {
         notifyStaff([cancelInfo.prep_staff_id], { title: '❌ أوردر اتلغى', body: `الأوردر #${order.id} اتلغى. وقّف التجهيز.`, tag: 'cancel-' + order.id, url: '/staff/#store' }).catch(() => {});
       }

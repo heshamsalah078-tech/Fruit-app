@@ -370,6 +370,13 @@ function timesFor(o){
   if(o.delivered_at)lines.push("تم التسليم: <b>"+stDt(o.delivered_at)+"</b>");
   return lines.length?'<div class="mute" style="font-size:12px;line-height:1.9;margin-top:8px">'+lines.join("<br>")+'</div>':'';
 }
+var ETA_CAP={preparing:"بنجهّز طلبك دلوقتي",waiting_courier:"بنجهّز طلبك دلوقتي",courier_assigned:"بنجهّز طلبك دلوقتي",on_the_way:"المندوب في الطريق إليك"};
+function hhmm(iso){try{return new Date(iso).toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"})}catch(e){return""}}
+function etaBlock(o){
+  var e=o.eta;if(!e)return"";
+  var big=e.phase==="on_the_way"&&e.high<=8?"قرّب يوصل":"خلال "+num(e.low)+" – "+num(e.high)+" دقيقة";
+  return '<div class="card" style="margin:10px 0 0;background:var(--g2)"><div class="mute" style="font-size:12px">⏱️ وقت التوصيل المتوقع</div><div style="font-size:20px;font-weight:800;margin-top:2px">'+big+'</div><div class="mute" style="font-size:12px;margin-top:2px">تقريباً من '+hhmm(e.from_at)+' لـ '+hhmm(e.to_at)+' · '+ETA_CAP[e.phase]+'</div></div>';
+}
 function ordV(){
   var live=orders.filter(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"});
   if(!live.length){$("orders").innerHTML='<div class="empty"><div style="font-size:56px">🚚</div>لا توجد طلبات حالية.</div>';return}
@@ -378,7 +385,7 @@ function ordV(){
     if(o.status==="cancelled")return h+'<p><b>تم إلغاء الطلب</b></p>'+timesFor(o)+'</div>';
     if(o.pay)h+='<p class="mute">حالة الدفع: '+(o.pay==="due"?"الدفع عند الاستلام عبر فودافون كاش":o.pay==="pending"?"بانتظار تأكيد التحويل رقم "+o.ref:"تم تأكيد الدفع")+'</p>';
     var curIdx=STATUS_SEQ.indexOf(o.status);
-    h+='<ul class="steps">'+STATUS_SEQ.map(function(s,k){return '<li class="'+(k<=curIdx?'done':'')+'"><i>'+(k<=curIdx?'✓':'')+'</i>'+STATUS_LABELS[s]+'</li>'}).join("")+'</ul>'+timesFor(o);
+    h+='<ul class="steps">'+STATUS_SEQ.map(function(s,k){return '<li class="'+(k<=curIdx?'done':'')+'"><i>'+(k<=curIdx?'✓':'')+'</i>'+STATUS_LABELS[s]+'</li>'}).join("")+'</ul>'+etaBlock(o)+timesFor(o);
     if(o.status==="on_the_way")h+='<div class="tot"><b>ادفع عند الاستلام</b>'+(payErr?'<p style="color:var(--t);font-weight:700;margin:8px 0">'+payErr+'</p>':'')+'<p class="mute">حوّل '+money(o.total)+' إلى فودافون كاش على الرقم 010XXXXXXXX ثم أدخل رقم العملية.</p><input id="payref" placeholder="رقم العملية" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit"><button class="big" style="background:var(--g)" data-r="'+o.id+'">تأكيد الاستلام والدفع</button></div>';
     if(o.status==="awaiting_prep"||o.status==="preparing")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب مجانًا</button>';
     else if(o.status==="awaiting_delivery"||o.status==="on_the_way")h+='<button class="chip" style="margin-top:12px;color:var(--t)" data-x="'+o.id+'">إلغاء الطلب (رسوم التوصيل لا تُسترد)</button>';

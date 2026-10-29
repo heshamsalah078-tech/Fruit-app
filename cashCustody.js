@@ -16,7 +16,7 @@
 
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
 
-function init({ pool, requireAuth, express }) {
+function init({ pool, requireAuth, express, issueActivation, activationRequired, badPassword }) {
   const router = express.Router();
 
 
@@ -82,7 +82,11 @@ function init({ pool, requireAuth, express }) {
       if (!owed.order_ids.length) {
         return res.status(400).json({ error: 'nothing_owed', message: 'لا يوجد مبلغ مستحق عليك حالياً.' });
       }
-      const to_staff_id = req.body.to_staff_id || null; // optional: which finance/admin person they paid
+      let to_staff_id = req.body.to_staff_id || null; // optional: which FINANCE person they paid
+      if (to_staff_id) {
+        const f = await pool.query(`SELECT id FROM staff WHERE id=$1 AND role='finance' AND active=true`, [to_staff_id]);
+        if (!f.rows.length) to_staff_id = null;
+      }
       const r = await pool.query(
         `INSERT INTO cash_custody_events (kind, from_staff_id, to_staff_id, amount, order_ids, status)
          VALUES ('courier_settlement',$1,$2,$3,$4,'pending') RETURNING *`,
@@ -112,10 +116,14 @@ function init({ pool, requireAuth, express }) {
   //  - finance sees pending courier_settlements (any courier -> finance/admin generally, shown to all finance+admin)
   //  - admin additionally sees pending finance_handovers
   router.get('/cash/pending', requireAuth('finance', 'admin'), async (req, res) => {
-    const courierEvents = await pool.query(
-      `SELECT e.*, s.name AS from_name FROM cash_custody_events e JOIN staff s ON s.id = e.from_staff_id
-        WHERE e.kind='courier_settlement' AND e.status='pending' ORDER BY e.reported_at`
-    );
+    // Only FINANCE collects from couriers. The admin never touches courier cash (so he can audit finance).
+    let courierEvents = { rows: [] };
+    if (req.user.role === 'finance') {
+      courierEvents = await pool.query(
+        `SELECT e.*, s.name AS from_name FROM cash_custody_events e JOIN staff s ON s.id = e.from_staff_id
+          WHERE e.kind='courier_settlement' AND e.status='pending' ORDER BY e.reported_at`
+      );
+    }
     let handovers = { rows: [] };
     if (req.user.role === 'admin') {
       handovers = await pool.query(
@@ -140,6 +148,10 @@ function init({ pool, requireAuth, express }) {
       if (ev.kind === 'finance_handover' && req.user.role !== 'admin') {
         await client.query('ROLLBACK');
         return res.status(403).json({ error: 'admin_only', message: 'تسليم المدير المالي للإدارة يؤكده الأدمن فقط.' });
+      }
+      if (ev.kind === 'courier_settlement' && req.user.role !== 'finance') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'finance_only', message: 'التحصيل من الدليفرية للمدير المالي فقط.' });
       }
       await client.query(
         `UPDATE cash_custody_events SET status='confirmed', confirmed_by=$1, confirmed_at=now(), to_staff_id=$1 WHERE id=$2`,
@@ -194,10 +206,10 @@ function init({ pool, requireAuth, express }) {
   // ---------- per-order collection (the collector decides: received / not received) ----------
 
   // Delivered orders for couriers this person collects from (admin sees all). Grouped client-side.
-  router.get('/cash/orders', requireAuth('finance', 'admin'), async (req, res) => {
+  router.get('/cash/orders', requireAuth('finance'), async (req, res) => {
     try {
-      const where = req.user.role === 'admin' ? '' : 'AND (s.collector_id = $1 OR s.collector_id IS NULL)';
-      const params = req.user.role === 'admin' ? [] : [req.user.id];
+      const where = 'AND (s.collector_id = $1 OR s.collector_id IS NULL)';
+      const params = [req.user.id];
       const r = await pool.query(
         `SELECT o.id, o.total, o.cash_status, o.cash_decided_at, o.delivered_at, o.created_at,
                 s.id AS courier_id, s.name AS courier_name, s.settlement_mode,
@@ -216,16 +228,15 @@ function init({ pool, requireAuth, express }) {
   });
 
   // The collector marks specific orders received / not received. Identity comes from the session.
-  router.patch('/cash/orders/decide', requireAuth('finance', 'admin'), async (req, res) => {
+  router.patch('/cash/orders/decide', requireAuth('finance'), async (req, res) => {
     const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids.map(Number).filter(Number.isInteger) : [];
     const status = req.body.status;
     if (!ids.length || !['received', 'not_received'].includes(status)) {
       return res.status(400).json({ error: 'invalid', message: 'بيانات غير صحيحة.' });
     }
     try {
-      const scope = req.user.role === 'admin' ? '' :
-        'AND delivery_staff_id IN (SELECT id FROM staff WHERE collector_id = $4 OR collector_id IS NULL)';
-      const params = [ids, status, req.user.id].concat(req.user.role === 'admin' ? [] : [req.user.id]);
+      const scope = 'AND delivery_staff_id IN (SELECT id FROM staff WHERE collector_id = $4 OR collector_id IS NULL)';
+      const params = [ids, status, req.user.id, req.user.id];
       const r = await pool.query(
         `UPDATE orders SET cash_status=$2, cash_decided_by=$3, cash_decided_at=now(),
                 cash_settled = ($2 = 'received')
@@ -259,12 +270,12 @@ function init({ pool, requireAuth, express }) {
       `SELECT s.id, s.name, s.phone, s.phone2, s.address, s.active, s.settlement_mode, s.collector_id, c.name AS collector_name,
               (EXISTS (SELECT 1 FROM orders o2 WHERE o2.delivery_staff_id=s.id)
                OR EXISTS (SELECT 1 FROM cash_custody_events e WHERE e.from_staff_id=s.id OR e.to_staff_id=s.id OR e.confirmed_by=s.id)
-               OR EXISTS (SELECT 1 FROM orders o3 WHERE o3.cash_decided_by=s.id)) AS has_history,
+               OR EXISTS (SELECT 1 FROM orders o3 WHERE o3.cash_decided_by=s.id OR o3.assigned_delivery_id=s.id OR o3.assigned_prep_id=s.id)) AS has_history,
               COALESCE((SELECT SUM(total) FROM orders o WHERE o.delivery_staff_id=s.id AND o.status='delivered' AND o.cash_settled=false),0)::numeric AS owed
          FROM staff s LEFT JOIN staff c ON c.id = s.collector_id
         WHERE s.role='delivery' ORDER BY s.id`
     );
-    const collectors = await pool.query(`SELECT id, name, role FROM staff WHERE role IN ('finance','admin') AND active=true ORDER BY role DESC, name`);
+    const collectors = await pool.query(`SELECT id, name, role FROM staff WHERE role='finance' AND active=true ORDER BY name`);
     const out = { couriers: couriers.rows.map((c) => ({ ...c, owed: round2(c.owed) })), collectors: collectors.rows };
     if (req.user.role === 'admin') {
       const d = await pool.query(
@@ -277,27 +288,30 @@ function init({ pool, requireAuth, express }) {
   });
 
   router.post('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
-    const bcrypt = require('bcryptjs');
-    const { name, phone, phone2, address, password, settlement_mode, collector_id } = req.body;
-    if (!name || !phone || !password || String(password).length < 6) {
+    const { name, phone, phone2, address, settlement_mode, collector_id, password } = req.body;
+    if (!name || !String(name).trim() || !phone || !String(phone).trim()) {
       return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
     }
     const mode = ['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode) ? settlement_mode : 'per_order';
     try {
-      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
+      if (!(await activationRequired()) && badPassword(password)) {
+        return res.status(400).json({ error: 'password_required', message: 'اكتب كلمة سر للدليفري (6 أحرف على الأقل).' });
+      }
+      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [String(phone).trim()]);
       if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
       let col = collector_id ? Number(collector_id) : null;
       if (!col) { // default collector: a finance staff member
         const f = await pool.query(`SELECT id FROM staff WHERE role='finance' AND active=true ORDER BY id LIMIT 1`);
         col = f.rows[0] ? f.rows[0].id : null;
       }
-      const hash = await bcrypt.hash(password, 10);
+      // No password: the courier sets his own with a one-time activation code (never shown to the manager).
       const r = await pool.query(
         `INSERT INTO staff (name, phone, phone2, address, password_hash, role, settlement_mode, collector_id)
-         VALUES ($1,$2,$3,$4,$5,'delivery',$6,$7) RETURNING id, name, phone, phone2, address, settlement_mode, collector_id`,
-        [name, phone, phone2 || null, address || null, hash, mode, col]
+         VALUES ($1,$2,$3,$4,NULL,'delivery',$5,$6) RETURNING id, name, phone, phone2, address, settlement_mode, collector_id`,
+        [String(name).trim(), String(phone).trim(), phone2 || null, address || null, mode, col]
       );
-      res.json({ ok: true, courier: r.rows[0] });
+      const d = await issueActivation(pool, r.rows[0].id, r.rows[0].phone, req.user.id, 'activation_issued', password);
+      res.json({ ok: true, courier: r.rows[0], activation_sent: d.sent });
     } catch (e) {
       console.error('add courier failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّرت الإضافة.' });
@@ -305,7 +319,8 @@ function init({ pool, requireAuth, express }) {
   });
 
   router.patch('/couriers/:id', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
-    const { settlement_mode, collector_id, active, name, phone, phone2, address } = req.body;
+    const { settlement_mode, collector_id, active, phone, phone2, address } = req.body; // name is fixed after creation
+    const name = undefined;
     try {
       const t = await pool.query(`SELECT id FROM staff WHERE id=$1 AND role='delivery'`, [req.params.id]);
       if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
@@ -333,7 +348,7 @@ function init({ pool, requireAuth, express }) {
       if (collector_id !== undefined) {
         const c = collector_id ? Number(collector_id) : null;
         if (c) {
-          const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role IN ('finance','admin') AND active=true`, [c]);
+          const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role='finance' AND active=true`, [c]);
           if (!ok.rows.length) return res.status(400).json({ error: 'invalid_collector' });
         }
         await pool.query('UPDATE staff SET collector_id=$1 WHERE id=$2', [c, req.params.id]);
@@ -354,7 +369,7 @@ function init({ pool, requireAuth, express }) {
       const h = await pool.query(
         `SELECT (EXISTS (SELECT 1 FROM orders WHERE delivery_staff_id=$1 OR cash_decided_by=$1)
               OR EXISTS (SELECT 1 FROM cash_custody_events WHERE from_staff_id=$1 OR to_staff_id=$1 OR confirmed_by=$1)
-              OR EXISTS (SELECT 1 FROM orders WHERE prep_staff_id=$1)
+              OR EXISTS (SELECT 1 FROM orders WHERE prep_staff_id=$1 OR assigned_delivery_id=$1 OR assigned_prep_id=$1)
               OR EXISTS (SELECT 1 FROM stock_movements WHERE staff_id=$1)
               OR EXISTS (SELECT 1 FROM courier_mgmt_delegates WHERE granted_by=$1)) AS used`, [req.params.id]);
       if (h.rows[0].used) {

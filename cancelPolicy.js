@@ -37,25 +37,30 @@ function init({ pool, requireAuth, express }) {
     const stage = stageOf(order);
     if (!stage) return null;
     const S = await getSettings(db);
-    let minutes = null, share = 0, cost = 0, basis = 0;
-    const fee = Number(order.delivery_fee || 0);
+    let minutes = null, share = 0, cost = 0, basis = 0, courierFee = 0;
+    // The basis is always the ZONE price (even for a free-delivery order); the customer's own charge is irrelevant here.
+    const zf = await db.query('SELECT zone_fee, delivery_fee FROM orders WHERE id = $1', [order.id]);
+    const fee = Number((zf.rows[0] && (zf.rows[0].zone_fee ?? zf.rows[0].delivery_fee)) || 0);
     if (stage === 'departed') {
       const m = await db.query('SELECT EXTRACT(EPOCH FROM (now() - delivery_started_at)) / 60 AS m FROM orders WHERE id = $1', [order.id]);
       minutes = m.rows[0].m === null ? null : Math.round(Number(m.rows[0].m) * 10) / 10;
       basis = fee > 0 ? fee : S.standard_delivery_fee;
       share = (minutes !== null && minutes <= S.cancel_grace_min) ? S.cancel_early_share_pct : S.cancel_late_share_pct;
       cost = Math.round(basis * share) / 100;
+      // The courier went and came back with the order: it is not his fault, so he is credited the full delivery fee.
+      // (The company absorbs it; the customer pays nothing.)
+      courierFee = basis;
     }
     const trip = order.trip_id ? (await db.query('SELECT courier_id FROM trips WHERE id = $1', [order.trip_id])).rows[0] : null;
     const courierId = (trip && trip.courier_id) || order.delivery_staff_id || null;
     const prepId = order.prep_staff_id || order.assigned_prep_id || null;
     await db.query(
       `INSERT INTO order_cancellations (order_id, cancelled_by_role, cancelled_by_id, stage, reason, trip_id, courier_id, prep_staff_id,
-                                        delivery_fee, cost_basis, minutes_since_departure, company_share_pct, company_cost)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (order_id) DO NOTHING`,
+                                        delivery_fee, cost_basis, minutes_since_departure, company_share_pct, company_cost, courier_fee_owed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (order_id) DO NOTHING`,
       [order.id, actor.role, actor.id, stage, actor.reason ? String(actor.reason).slice(0, 300) : null, order.trip_id || null,
-       courierId, prepId, fee, basis, minutes, share, cost]);
-    return { stage, company_cost: cost, share_pct: share, minutes, courier_id: courierId, prep_staff_id: prepId };
+       courierId, prepId, fee, basis, minutes, share, cost, courierFee]);
+    return { stage, company_cost: cost, courier_fee_owed: courierFee, share_pct: share, minutes, courier_id: courierId, prep_staff_id: prepId };
   }
 
   router.get('/cancel/settings', requireAuth('admin', 'ops'), async (req, res) => {
@@ -82,7 +87,7 @@ function init({ pool, requireAuth, express }) {
       const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
       const r = await pool.query(
         `SELECT x.order_id, x.stage, x.reason, x.cancelled_at, x.cancelled_by_role, x.delivery_fee, x.minutes_since_departure,
-                x.company_share_pct, x.company_cost,
+                x.company_share_pct, x.company_cost, x.courier_fee_owed, x.returned_at,
                 c.name AS customer_name,
                 CASE WHEN x.cancelled_by_role = 'customer' THEN c.name ELSE sb.name END AS cancelled_by_name,
                 cr.name AS courier_name, pr.name AS prep_name
@@ -95,7 +100,8 @@ function init({ pool, requireAuth, express }) {
           WHERE x.cancelled_at > now() - make_interval(days => $1)
           ORDER BY x.cancelled_at DESC LIMIT 300`, [days]);
       const total = r.rows.reduce((a, x) => a + Number(x.company_cost || 0), 0);
-      res.json({ rows: r.rows, total_company_cost: Math.round(total * 100) / 100 });
+      const fees = r.rows.reduce((a, x) => a + Number(x.courier_fee_owed || 0), 0);
+      res.json({ rows: r.rows, total_company_cost: Math.round(total * 100) / 100, total_courier_fees: Math.round(fees * 100) / 100 });
     } catch (e) { console.error('orders/cancellations', e.message); res.status(500).json({ error: 'failed', message: 'تعذّر تحميل التقرير.' }); }
   });
 

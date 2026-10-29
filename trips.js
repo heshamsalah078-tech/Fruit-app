@@ -14,8 +14,8 @@
 //  * The ops manager starts a trip with one button ("بدأت"); that is when the delivery timer begins.
 
 const LOCK_KEY = 19001;
-const DEFAULTS = { courier_max_orders: 3, courier_offer_min: 2, courier_lead_min: 3, courier_max_delay_min: 30 };
-const RANGES = { courier_max_orders: [1, 10], courier_offer_min: [1, 30], courier_lead_min: [0, 30], courier_max_delay_min: [5, 240] };
+const DEFAULTS = { courier_max_orders: 3, courier_offer_min: 2, courier_lead_min: 3, courier_max_delay_min: 30, courier_late_grace_min: 5 };
+const RANGES = { courier_max_orders: [1, 10], courier_offer_min: [1, 30], courier_lead_min: [0, 30], courier_max_delay_min: [5, 240], courier_late_grace_min: [1, 120] };
 // What happens when a courier said "تمام" but didn't reach the store in time: 'auto' = the system moves the trip to the next courier,
 // 'manual' = only the ops manager is notified and he decides. Either way the ops manager can reassign at any time.
 const LATE_ACTIONS = ['auto', 'manual'];
@@ -107,40 +107,46 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
     }
   }
 
-  // ---------- candidate ranking ----------
-  // Who can be given a trip right now?  Only couriers who are NOT carrying orders:
-  //   1) already free at the store (pressed "وصلت"), idle longest first
-  //   2) finished their trip and are heading back (no need to wait for "وصلت"), finished earliest first
-  // A courier still on a trip is never assigned a new order; the moment he finishes his last order he becomes a
-  // candidate and the oldest waiting order goes to him.
-  async function rankedCandidates(db, tripId) {
+  // ---------- candidate selection ----------
+  // A courier does NOT have to wait at the store: he only goes there once a trip is assigned to him.
+  //   FREE  = on duty, no trip, nothing to return.  BUSY = still on a trip.
+  //   1) the trip is shown to EVERY free courier at once; the first one to press "تمام" gets it and it disappears from the rest;
+  //   2) only if nobody is free, or nobody confirmed within courier_offer_min, it goes to BUSY couriers ONE AT A TIME, the one who
+  //      will finish first first (fewest orders left, then the one who left earliest); each has courier_offer_min to confirm.
+  // Never offered: a courier who already holds a waiting trip, whose bike broke down, who carries an order to return, or who
+  // already ignored / was late on THIS trip.
+  async function candidatesFor(db, tripId) {
     const r = await db.query(
-      `SELECT s.id, s.name, s.at_store_since,
-              (SELECT MAX(ended_at) FROM trips x WHERE x.courier_id = s.id AND x.status = 'done') AS last_ended
+      `SELECT s.id, s.name, bt.id AS busy_trip, bt.started_at AS busy_started,
+              COALESCE((SELECT COUNT(*) FROM orders ob WHERE ob.trip_id = bt.id AND ob.status NOT IN ('delivered','cancelled')), 0)::int AS open_left,
+              EXISTS (SELECT 1 FROM trip_offers f WHERE f.courier_id = s.id AND f.response = 'pending' AND f.deadline_at > now()) AS has_pending
          FROM staff s
+         LEFT JOIN LATERAL (SELECT id, started_at FROM trips WHERE courier_id = s.id AND status = 'on_the_way' ORDER BY id LIMIT 1) bt ON true
         WHERE s.role = 'delivery' AND s.active = true AND s.password_hash IS NOT NULL AND s.on_duty = true
           AND s.settlement_mode IS DISTINCT FROM 'suspended'
-          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.courier_id = s.id AND x.status IN ('assigned','on_the_way'))
+          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.courier_id = s.id AND x.status = 'assigned')
+          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.courier_id = s.id AND x.status = 'on_the_way' AND x.breakdown_at IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM orders r WHERE r.delivery_staff_id = s.id AND r.return_pending)
-          AND NOT EXISTS (SELECT 1 FROM trip_offers f WHERE f.courier_id = s.id AND f.response = 'pending')
           AND NOT EXISTS (SELECT 1 FROM trip_offers f WHERE f.trip_id = $1 AND f.courier_id = s.id AND f.response IN ('declined','timeout'))`,
       [tripId]);
-    const group = (c) => (c.at_store_since ? 0 : 1);
-    const key = (c) => {
-      const t = group(c) === 0 ? c.at_store_since : c.last_ended;
-      return t ? new Date(t).getTime() : 0;
-    };
-    return r.rows.sort((a, b) => group(a) - group(b) || key(a) - key(b) || a.id - b.id);
+    const t = (v) => (v ? new Date(v).getTime() : 0);
+    const free = r.rows.filter((c) => !c.busy_trip && !c.has_pending);
+    const freeBusyElsewhere = r.rows.filter((c) => !c.busy_trip && c.has_pending).length;
+    const busy = r.rows.filter((c) => c.busy_trip && !c.has_pending)
+      .sort((a, b) => a.open_left - b.open_left || t(a.busy_started) - t(b.busy_started) || a.id - b.id);
+    return { free, freeBusyElsewhere, busy };
   }
 
   async function offerTrip(db, tripId, settings) {
-    const cands = await rankedCandidates(db, tripId);
-    let pick = null;
-    for (const c of cands) {
-      const gate = await canTakeDelivery(db, c.id);
-      if (gate.ok) { pick = c; break; }
+    const cands = await candidatesFor(db, tripId);
+    let targets = [], tier = 'free';
+    for (const c of cands.free) { if ((await canTakeDelivery(db, c.id)).ok) targets.push(c); }
+    if (!targets.length && cands.freeBusyElsewhere > 0) return false; // free couriers exist but are deciding on another trip: wait, do not jump to busy ones
+    if (!targets.length) {
+      tier = 'busy';
+      for (const c of cands.busy) { if ((await canTakeDelivery(db, c.id)).ok) { targets = [c]; break; } }
     }
-    if (!pick) {
+    if (!targets.length) {
       const was = await db.query('SELECT escalated_at FROM trips WHERE id = $1', [tripId]);
       if (!was.rows[0].escalated_at) {
         await db.query('UPDATE trips SET escalated_at = now() WHERE id = $1', [tripId]);
@@ -149,13 +155,15 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       }
       return false;
     }
-    // The courier is NOT given a choice: the trip is assigned to him directly. He only has to acknowledge ("تمام")
-    // within courier_offer_min; if he doesn't, it moves to the next courier automatically.
-    await db.query(
-      `INSERT INTO trip_offers (trip_id, courier_id, deadline_at) VALUES ($1, $2, now() + make_interval(mins => $3))`,
-      [tripId, pick.id, settings.courier_offer_min]);
+    // Nobody gets a choice to decline: they only acknowledge ("تمام") within courier_offer_min. All offers of one broadcast share a deadline.
+    for (const c of targets) {
+      await db.query(`INSERT INTO trip_offers (trip_id, courier_id, deadline_at) VALUES ($1, $2, now() + make_interval(mins => $3))`, [tripId, c.id, settings.courier_offer_min]);
+    }
     await db.query(`UPDATE trips SET status = 'offering' WHERE id = $1`, [tripId]);
-    safe(notifyStaff([pick.id], { title: '🛵 اتعيّن لك أوردر', body: `رحلة #${tripId} اتعيّنت لك. افتح التطبيق واضغط "تمام" خلال ${settings.courier_offer_min} دقيقة.`, tag: 'offer-' + tripId, url: '/staff/#driver' }));
+    await log(db, tripId, 'offered', { mode: 'system', note: tier === 'free' ? `shown to ${targets.length} free courier(s)` : `offered to busy courier #${targets[0].id}` });
+    safe(notifyStaff(targets.map((c) => c.id), tier === 'free'
+      ? { title: '🛵 أوردر متاح', body: `رحلة #${tripId} متاحة. أول واحد يضغط "تمام" خلال ${settings.courier_offer_min} دقيقة ياخدها.`, tag: 'offer-' + tripId, url: '/staff/#driver' }
+      : { title: '🛵 اتعيّن لك أوردر', body: `رحلة #${tripId} اتعيّنت لك لما تخلّص رحلتك. اضغط "تمام" خلال ${settings.courier_offer_min} دقيقة.`, tag: 'offer-' + tripId, url: '/staff/#driver' }));
     return true;
   }
 
@@ -173,7 +181,8 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
         `UPDATE trip_offers SET response = 'timeout', responded_at = now()
           WHERE response = 'pending' AND deadline_at < now() RETURNING trip_id, courier_id`);
       for (const x of to.rows) {
-        await client.query(`UPDATE trips SET status = 'unassigned' WHERE id = $1 AND status = 'offering'`, [x.trip_id]);
+        await client.query(`UPDATE trips SET status = 'unassigned' WHERE id = $1 AND status = 'offering'
+                               AND NOT EXISTS (SELECT 1 FROM trip_offers p WHERE p.trip_id = $1 AND p.response = 'pending')`, [x.trip_id]);
         await log(client, x.trip_id, 'offer_timeout', { mode: 'system', courier_id: x.courier_id, note: 'courier did not press "تمام" in time' });
         const nm = (await client.query('SELECT name FROM staff WHERE id = $1', [x.courier_id])).rows[0];
         notes.push({ title: '⚠️ مندوب ما أكّدش', body: `${nm ? nm.name : 'مندوب'} ما ضغطش "تمام" على رحلة #${x.trip_id} والرحلة اتحوّلت لمندوب تاني. كلّمه واعرف السبب.`, tag: 'noack-' + x.trip_id, url: '/staff/#ops' });
@@ -204,25 +213,34 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       //    courier_late_action = 'auto'   -> the trip moves to the next courier by itself
       //    courier_late_action = 'manual' -> only the ops manager is told (once) and he decides
       const late = await client.query(
-        `SELECT t.id, t.courier_id, t.late_notified_at, c.name AS courier_name FROM trips t
+        `SELECT t.id, t.courier_id, t.late_notified_at, c.name AS courier_name,
+                (t.late_notified_at IS NOT NULL AND t.late_notified_at + make_interval(mins => $2) < now()) AS grace_over FROM trips t
            JOIN staff c ON c.id = t.courier_id
            JOIN orders o ON o.trip_id = t.id AND o.status NOT IN ('delivered','cancelled')
           WHERE t.status = 'assigned' AND c.at_store_since IS NULL
+            AND NOT EXISTS (SELECT 1 FROM trips a WHERE a.courier_id = t.courier_id AND a.status = 'on_the_way')
           GROUP BY t.id, t.courier_id, t.late_notified_at, c.name, t.assigned_at
          HAVING BOOL_AND(o.prepared_at IS NOT NULL)
-            AND GREATEST(COALESCE(t.assigned_at, MAX(o.prepared_at)), MAX(o.prepared_at)) + make_interval(mins => $1) < now()`,
-        [S.courier_max_delay_min]);
+            AND GREATEST(COALESCE(t.assigned_at, MAX(o.prepared_at)), MAX(o.prepared_at),
+                         (SELECT MAX(a.ended_at) FROM trips a WHERE a.courier_id = t.courier_id AND a.status = 'done' AND a.ended_at >= t.assigned_at))
+                + make_interval(mins => $1) < now()`,
+        [S.courier_max_delay_min, S.courier_late_grace_min]);
       for (const x of late.rows) {
-        if (S.courier_late_action === 'auto') {
+        if (!x.late_notified_at) {
+          // first time late: tell the courier (and the ops manager) that an order is waiting for him
+          await client.query('UPDATE trips SET late_notified_at = now() WHERE id = $1', [x.id]);
+          await log(client, x.id, 'late_notice', { mode: 'system', courier_id: x.courier_id, note: S.courier_late_action === 'auto' ? `courier late; ${S.courier_late_grace_min} min grace before reassigning` : 'courier late; waiting for the ops manager to decide' });
+          safe(notifyStaff([x.courier_id], { title: '⏰ إنت اتأخرت', body: `في أوردر جاهز مستنيك في المحل (رحلة #${x.id}). تعالى بسرعة${S.courier_late_action === 'auto' ? `، ولو ما وصلتش خلال ${S.courier_late_grace_min} دقيقة هيتحوّل لمندوب تاني` : ''}.`, tag: 'late-c-' + x.id, url: '/staff/#driver' }));
+          notes.push({ title: '⚠️ مندوب اتأخر', body: S.courier_late_action === 'auto'
+            ? `${x.courier_name} قال "تمام" وما وصلش المحل خلال ${S.courier_max_delay_min} دقيقة (رحلة #${x.id}). نبّهناه، ولو ما وصلش خلال ${S.courier_late_grace_min} دقيقة هتتحوّل أوتوماتيك لمندوب تاني.`
+            : `${x.courier_name} قال "تمام" وما وصلش المحل خلال ${S.courier_max_delay_min} دقيقة (رحلة #${x.id}). نبّهناه. قرّر: انقله لمندوب تاني أو استنى.`, tag: 'late-' + x.id, url: '/staff/#ops' });
+        } else if (S.courier_late_action === 'auto' && x.grace_over) {
+          // still not here after the warning: the trip goes to the next courier in line
           await client.query(
             `INSERT INTO trip_offers (trip_id, courier_id, deadline_at, response, responded_at) VALUES ($1, $2, now(), 'timeout', now())`,
             [x.id, x.courier_id]);
-          await releaseTrip(client, x.id, `courier did not reach the store within ${S.courier_max_delay_min} min`);
-          notes.push({ title: '⚠️ مندوب اتأخر', body: `${x.courier_name} قال "تمام" وما وصلش المحل خلال ${S.courier_max_delay_min} دقيقة. رحلة #${x.id} اتحوّلت أوتوماتيك لمندوب تاني.`, tag: 'late-' + x.id, url: '/staff/#ops' });
-        } else if (!x.late_notified_at) {
-          await client.query('UPDATE trips SET late_notified_at = now() WHERE id = $1', [x.id]);
-          await log(client, x.id, 'late_notice', { mode: 'system', courier_id: x.courier_id, note: 'courier late; waiting for the ops manager to decide' });
-          notes.push({ title: '⚠️ مندوب اتأخر', body: `${x.courier_name} قال "تمام" وما وصلش المحل خلال ${S.courier_max_delay_min} دقيقة (رحلة #${x.id}). قرّر: انقله لمندوب تاني أو استنى.`, tag: 'late-' + x.id, url: '/staff/#ops' });
+          await releaseTrip(client, x.id, `courier still not at the store ${S.courier_late_grace_min} min after the late warning`);
+          notes.push({ title: '⚠️ الرحلة اتحوّلت', body: `${x.courier_name} ما وصلش المحل حتى بعد التنبيه. رحلة #${x.id} اتحوّلت أوتوماتيك لمندوب تاني.`, tag: 'late2-' + x.id, url: '/staff/#ops' });
         }
       }
 
@@ -277,7 +295,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       const me = await pool.query('SELECT on_duty, at_store_since FROM staff WHERE id = $1', [req.user.id]);
       const onTrip = await pool.query(`SELECT id FROM trips WHERE courier_id = $1 AND status = 'on_the_way' LIMIT 1`, [req.user.id]);
       const s = me.rows[0] || {};
-      const state = !s.on_duty ? 'off' : onTrip.rows.length ? 'on_trip' : s.at_store_since ? 'free' : 'returning';
+      const state = !s.on_duty ? 'off' : onTrip.rows.length ? 'on_trip' : 'free';
       const offer = await pool.query(
         `SELECT f.id, f.trip_id, EXTRACT(EPOCH FROM (f.deadline_at - now()))::int AS remaining_s
            FROM trip_offers f WHERE f.courier_id = $1 AND f.response = 'pending' AND f.deadline_at > now() LIMIT 1`, [req.user.id]);
@@ -287,7 +305,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
           WHERE o.trip_id = $1 AND o.status NOT IN ('delivered','cancelled') ORDER BY o.id`, [tripId])).rows;
       const mine = await pool.query(
         `SELECT id, status FROM trips WHERE courier_id = $1 AND status IN ('assigned','on_the_way') ORDER BY (status = 'on_the_way') DESC, id LIMIT 1`, [req.user.id]);
-      const back = await pool.query(`SELECT o.id, o.total FROM orders o WHERE o.delivery_staff_id = $1 AND o.return_pending ORDER BY o.id`, [req.user.id]);
+      const back = await pool.query(`SELECT o.id, o.total, COALESCE(e.amount, 0) AS fee FROM orders o LEFT JOIN courier_earnings e ON e.order_id = o.id WHERE o.delivery_staff_id = $1 AND o.return_pending ORDER BY o.id`, [req.user.id]);
       const resc = await pool.query(`SELECT o.id, o.total, c.address, t.breakdown_lat, t.breakdown_lng FROM orders o JOIN trips t ON t.id = o.trip_id JOIN customers c ON c.id = o.customer_id WHERE o.rescue_courier_id = $1 AND t.rescue_picked_at IS NULL AND o.status = 'on_the_way' ORDER BY o.id`, [req.user.id]);
       res.json({
         to_return: back.rows, rescue: resc.rows,
@@ -314,51 +332,12 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
         await client.query('ROLLBACK');
         return res.status(409).json({ error: 'return_first', message: 'معاك أوردر ملغي لسه ما رجّعتوش. اضغط "رجّعت الأوردر" الأول.' });
       }
+      // He only goes to the store once a trip is assigned to him. Arriving with nothing assigned does nothing.
+      const mine = await client.query(`SELECT id FROM trips WHERE courier_id = $1 AND status = 'assigned' ORDER BY id LIMIT 1`, [req.user.id]);
+      if (!mine.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'no_trip', message: 'مفيش أوردر متعيّن لك دلوقتي. هتتبلّغ أول ما يتعيّن لك.' }); }
+      const tripId = mine.rows[0].id;
       await client.query(`UPDATE staff SET on_duty = true, at_store_since = COALESCE(at_store_since, now()) WHERE id = $1`, [req.user.id]);
-      // keep a reservation he already holds, and stamp that he is now physically here
-      await client.query(`UPDATE trips SET courier_arrived_at = COALESCE(courier_arrived_at, now()) WHERE courier_id = $1 AND status = 'assigned'`, [req.user.id]);
-      const mine = await client.query(`SELECT id FROM trips WHERE courier_id = $1 AND status = 'assigned'`, [req.user.id]);
-      let tripId = mine.rows[0] ? mine.rows[0].id : null;
-
-      if (!tripId) {
-        const gate = await canTakeDelivery(client, req.user.id);
-        if (gate.ok) {
-          // oldest READY trip that nobody is physically waiting to carry
-          const q = await client.query(
-            `SELECT t.id, t.courier_id FROM trips t
-               LEFT JOIN staff c ON c.id = t.courier_id
-               JOIN orders o ON o.trip_id = t.id AND o.status NOT IN ('delivered','cancelled')
-              WHERE t.status IN ('unassigned','offering','assigned') AND (t.courier_id IS NULL OR c.at_store_since IS NULL)
-              GROUP BY t.id, t.courier_id
-             HAVING BOOL_AND(o.prepared_at IS NOT NULL)
-              ORDER BY MIN(o.prepared_at), t.id LIMIT 1`);
-          if (q.rows[0]) {
-            tripId = q.rows[0].id;
-            const displaced = q.rows[0].courier_id;
-            await assignTrip(client, tripId, req.user.id, 'arrival', null, displaced ? 'took the order by arriving first' : 'arrived while order was waiting');
-            await client.query(
-              `WITH s AS (UPDATE trip_offers SET response = 'superseded', responded_at = now()
-                           WHERE courier_id = $1 AND response = 'pending' RETURNING trip_id)
-               UPDATE trips SET status = 'unassigned' WHERE id IN (SELECT trip_id FROM s) AND status = 'offering'`, [req.user.id]);
-            if (displaced) {
-              // the courier who lost the order is auto-given the next trip in line
-              const nx = await client.query(
-                `SELECT t.id FROM trips t JOIN orders o ON o.trip_id = t.id AND o.status NOT IN ('delivered','cancelled')
-                  WHERE t.status IN ('unassigned','offering') AND t.id <> $1
-                  GROUP BY t.id
-                 HAVING BOOL_AND(o.prepared_at IS NOT NULL)
-                  ORDER BY MIN(o.prepared_at), t.id LIMIT 1`, [tripId]);
-              const ok = await canTakeDelivery(client, displaced);
-              if (nx.rows[0] && ok.ok) {
-                await assignTrip(client, nx.rows[0].id, displaced, 'auto', null, 'given next order after being displaced by an arrival');
-                safe(notifyStaff([displaced], { title: '🛵 اتعيّن لك أوردر تاني', body: `الأوردر اللي كان محجوز لك اتسلّم لمندوب وصل قبلك. اتعيّن لك رحلة #${nx.rows[0].id}.`, tag: 'displaced-' + displaced, url: '/staff/#driver' }));
-              } else {
-                safe(notifyStaff([displaced], { title: 'تغيير في الأوردر', body: 'الأوردر المحجوز لك اتسلّم لمندوب وصل المحل قبلك.', tag: 'displaced-' + displaced, url: '/staff/#driver' }));
-              }
-            }
-          }
-        }
-      }
+      await client.query(`UPDATE trips SET courier_arrived_at = COALESCE(courier_arrived_at, now()) WHERE id = $1`, [tripId]);
       await client.query('COMMIT');
       kick();
       res.json({ ok: true, trip_id: tripId });
@@ -367,6 +346,15 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       console.error('courier/arrive', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّر التسجيل.' });
     } finally { client.release(); }
+  });
+
+  // "بدء الدوام": the courier goes on duty from wherever he is. He does NOT have to come to the store.
+  router.post('/courier/on', requireAuth('delivery'), async (req, res) => {
+    try {
+      await pool.query(`UPDATE staff SET on_duty = true WHERE id = $1`, [req.user.id]);
+      kick();
+      res.json({ ok: true });
+    } catch (e) { console.error('courier/on', e.message); res.status(500).json({ error: 'failed', message: 'تعذّر التسجيل.' }); }
   });
 
   // "انصراف": end of shift, stop receiving offers.
@@ -409,7 +397,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       await client.query('UPDATE order_cancellations SET returned_at = now() WHERE order_id = $1', [o.rows[0].id]);
       await client.query('COMMIT');
       kick();
-      if (o.rows[0].delivery_staff_id) safe(notifyStaff([o.rows[0].delivery_staff_id], { title: '✅ اتأكد استلام المرتجع', body: `أوردر #${o.rows[0].id} اتسجّل ورجع المخزن. ممكن تضغط "وصلت المحل".`, tag: 'retok-' + o.rows[0].id, url: '/staff/#driver' }));
+      if (o.rows[0].delivery_staff_id) safe(notifyStaff([o.rows[0].delivery_staff_id], { title: '✅ اتأكد استلام المرتجع', body: `أوردر #${o.rows[0].id} اتسجّل ورجع المخزن. لو فيه أوردر جاهز هيتبعتلك، ولو مفيش استنى لحد ما يتبعتلك.`, tag: 'retok-' + o.rows[0].id, url: '/staff/#driver' }));
       res.json({ ok: true });
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) {}
@@ -503,6 +491,8 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       if (busy.rows.length) return res.status(409).json({ error: 'has_trip', message: 'عندك رحلة لسه ما خلصتش.' });
       await pool.query(`UPDATE staff SET on_duty = false, at_store_since = NULL WHERE id = $1`, [req.user.id]);
       await pool.query(`UPDATE trip_offers SET response = 'superseded', responded_at = now() WHERE courier_id = $1 AND response = 'pending'`, [req.user.id]);
+      // a trip that was only waiting on him goes back to the rotation
+      await pool.query(`UPDATE trips SET status = 'unassigned' WHERE status = 'offering' AND NOT EXISTS (SELECT 1 FROM trip_offers p WHERE p.trip_id = trips.id AND p.response = 'pending')`);
       kick();
       res.json({ ok: true });
     } catch (e) { console.error('courier/off', e.message); res.status(500).json({ error: 'failed', message: 'تعذّر التسجيل.' }); }
@@ -517,7 +507,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
       const o = await client.query(`SELECT * FROM trip_offers WHERE id = $1 AND courier_id = $2 FOR UPDATE`, [Number(req.params.id), req.user.id]);
       const off = o.rows[0];
       if (!off) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not_found', message: 'التعيين غير موجود.' }); }
-      if (off.response !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'closed', message: 'التعيين انتهى أو اتحوّل لمندوب تاني.' }); }
+      if (off.response !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'closed', message: 'عفواً، الأوردر ده اتعيّن لمندوب تاني قبلك.' }); }
       const expired = (await client.query('SELECT now() > deadline_at AS e FROM trip_offers WHERE id = $1', [off.id])).rows[0].e;
       if (expired) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'expired', message: 'انتهت مهلة التأكيد.' }); }
       const gate = await canTakeDelivery(client, req.user.id);
@@ -525,16 +515,19 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
         await client.query('ROLLBACK');
         return res.status(403).json({ error: 'unsettled_cash', message: gate.reason === 'suspended' ? 'تم إيقاف التعامل معك حالياً. تواصل مع الإدارة.' : `لازم تسدد ${gate.amount} ج.م المستحقة عليك الأول.` });
       }
-      const held = await client.query(`SELECT 1 FROM trips WHERE courier_id = $1 AND status IN ('assigned','on_the_way')`, [req.user.id]);
+      const held = await client.query(`SELECT 1 FROM trips WHERE courier_id = $1 AND status = 'assigned'`, [req.user.id]); // a courier still on his current trip MAY acknowledge the next one
       if (held.rows.length) {
         await client.query(`UPDATE trip_offers SET response = 'superseded', responded_at = now() WHERE id = $1`, [off.id]);
         await client.query(`UPDATE trips SET status = 'unassigned' WHERE id = $1 AND status = 'offering'`, [off.trip_id]);
         await client.query('COMMIT'); kick();
-        return res.status(409).json({ error: 'already_busy', message: 'عندك رحلة شغّالة، التعيين ده اتحوّل لمندوب تاني.' });
+        return res.status(409).json({ error: 'already_busy', message: 'عندك رحلة معيّنة لك ومستنياك، التعيين ده اتحوّل لمندوب تاني.' });
       }
+      const others = await client.query(`SELECT courier_id FROM trip_offers WHERE trip_id = $1 AND response = 'pending' AND id <> $2`, [off.trip_id, off.id]);
       await client.query(`UPDATE trip_offers SET response = 'accepted', responded_at = now() WHERE id = $1`, [off.id]);
-      await assignTrip(client, off.trip_id, req.user.id, 'auto', null, 'courier acknowledged');
+      await assignTrip(client, off.trip_id, req.user.id, 'auto', null, 'courier acknowledged'); // also withdraws the offer from every other courier
       await client.query('COMMIT');
+      if (others.rows.length) safe(notifyStaff(others.rows.map((x) => x.courier_id), { title: 'الأوردر اتاخد', body: `رحلة #${off.trip_id} اتعيّنت لمندوب تاني (ضغط "تمام" قبلك).`, tag: 'offer-' + off.trip_id, url: '/staff/#driver' }));
+      kick();
       res.json({ ok: true });
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) {}
@@ -574,7 +567,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
            FROM staff s WHERE s.role = 'delivery' AND s.active = true AND s.password_hash IS NOT NULL ORDER BY s.name`);
       const view = couriers.rows.map((c) => ({
         id: c.id, name: c.name, reserved: c.reserved,
-        state: !c.on_duty ? 'off' : c.on_trip ? 'on_trip' : c.at_store_since ? 'free' : 'returning'
+        state: !c.on_duty ? 'off' : c.on_trip ? 'on_trip' : 'free'
       }));
       res.json({
         trips: trips.rows.map((t) => ({ ...t, orders: (by[t.id] || []).filter((o) => o.status !== 'delivered' || t.status === 'on_the_way') })).filter((t) => t.orders.length),

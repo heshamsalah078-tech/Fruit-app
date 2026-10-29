@@ -292,6 +292,7 @@ function tripsBlock(){
     row('نبلّغ المندوب قبل انتهاء التجهيز بـ (دقيقة)',num("tsLead",s.courier_lead_min))+
     row('أقصى تأخير للمندوب بعد "تمام" (دقيقة، تتحسب من جاهزية الأوردر)',num("tsDelay",s.courier_max_delay_min))+
     row('مهلة تجميع الأوردرات في رحلة (دقيقة، 0 = من غير مهلة)',num("tsBundle",s.trip_bundle_window_min))+
+    row('مهلة التنبيه قبل ما الرحلة تتحوّل لمندوب تاني (دقيقة بعد ما نبّهناه إنه اتأخر)',num("tsGrace",s.courier_late_grace_min))+
     row('لو اتأخر عن المدة دي','<select id="tsLate"'+ro+' style="'+selSt+'"><option value="auto"'+(s.courier_late_action!=="manual"?' selected':'')+'>النظام يحوّله أوتوماتيك لمندوب تاني</option><option value="manual"'+(s.courier_late_action==="manual"?' selected':'')+'>المدير يختار (إشعار فقط)</option></select>')+
     '<p class="mute" style="margin:12px 0 0">في الحالتين تقدر تعيّن مندوب تاني بنفسك في أي وقت، والتغيير بيتسجل باسمك.</p>'+
     (canEdit?'<button class="big" id="tsSave" style="margin-top:10px">حفظ الإعدادات</button>':'')+'</div>';
@@ -360,15 +361,19 @@ function earnMineCard(){
   return '<div class="card"><b>🛵 أجري من التوصيل</b>'+
     '<div style="display:flex;justify-content:space-between;margin-top:8px"><span>مستحق لك لسه</span><b style="font-size:18px">'+e.owed+' ج.م</b></div>'+
     '<div class="mute" style="margin-top:2px">عن '+e.owed_count+' أوردر · النهاردة '+e.today+' ج.م · اتدفع لك قبل كده '+e.paid+' ج.م</div>'+
+    (e.cancel_count>0?'<div style="margin-top:8px;background:var(--g2);border-radius:10px;padding:8px">↩️ <b>تراكم إلغاءات على الشركة: '+e.cancel_owed+' ج.م</b> <span class="mute">('+e.cancel_count+' أوردر اتلغى وهو معاك)</span></div>':'')+
+    (e.cash_held>0?'<div class="mute" style="margin-top:8px">💵 معاك عهدة للشركة: '+e.cash_held+' ج.م · '+(e.net>=0?'صافي اللي عليك بعد خصم مستحقاتك: <b>'+e.net+' ج.م</b>':'الشركة ليك صافي بعد خصم العهدة: <b>'+(-e.net)+' ج.م</b>')+'</div>':'')+
     '<p class="mute" style="margin:8px 0 0">أجرك عن كل أوردر = سعر توصيل المنطقة اللي سلّمت فيها.</p>'+rows+'</div>';
 }
 function earnSumCard(){
   var s=ERN.sum;if(!s)return '';
   var rows=(s.couriers||[]).length?s.couriers.map(function(c){
-    return '<div class="card row"><div><b>'+esc(c.name)+'</b><br><span class="mute">'+c.owed_count+' أوردر · اتدفع له '+c.paid+' ج.م</span></div>'+
-      '<div style="text-align:left"><b>'+c.owed+' ج.م</b>'+(c.owed>0&&(ROLE==="finance"||ROLE==="admin")?'<br><button class="chip" data-earnpay="'+c.id+'" data-earnamt="'+c.owed+'" data-earnname="'+esc(c.name)+'">تسجيل الدفع</button>':'')+'</div></div>';
+    return '<div class="card"><div class="row"><div><b>'+esc(c.name)+'</b><br><span class="mute">'+c.owed_count+' أوردر · اتدفع له '+c.paid+' ج.م</span></div><div style="text-align:left"><b>'+c.owed+' ج.م</b></div></div>'+
+      (c.cancel_count>0?'<div style="margin-top:6px">↩️ منها تراكم إلغاءات على الشركة: <b>'+c.cancel_owed+' ج.م</b> <span class="mute">('+c.cancel_count+' أوردر)</span></div>':'')+
+      (c.cash_held>0?'<div class="mute" style="margin-top:4px">💵 معاه عهدة: '+c.cash_held+' ج.م · '+(c.net>=0?'يسلّمك صافي '+c.net+' ج.م بعد الخصم':'الشركة ليه صافي '+(-c.net)+' ج.م بعد الخصم')+'</div>':'')+
+      (c.owed>0&&(ROLE==="finance"||ROLE==="admin")?'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="chip" data-earnpay="'+c.id+'" data-earnamt="'+c.owed+'" data-earnname="'+esc(c.name)+'">تسجيل الدفع كاش</button>'+(ROLE==="finance"&&c.cash_held>0?'<button class="chip" data-earnnet="'+c.id+'" data-earnname="'+esc(c.name)+'" data-earnheld="'+c.cash_held+'">خصم من العهدة</button>':'')+'</div>':'')+'</div>';
   }).join(''):'<p class="mute">مفيش أجور متسجلة لسه.</p>';
-  var pays=(s.payouts||[]).slice(0,8).map(function(p){return '<div class="mute" style="padding:3px 0">'+dt(p.paid_at)+' · '+esc(p.courier_name)+' · '+p.amount+' ج.م ('+p.orders_count+' أوردر)'+(p.paid_by_name?' · '+esc(p.paid_by_name):'')+'</div>'}).join('');
+  var pays=(s.payouts||[]).slice(0,8).map(function(p){return '<div class="mute" style="padding:3px 0">'+dt(p.paid_at)+' · '+esc(p.courier_name)+' · '+p.amount+' ج.م ('+p.orders_count+' أوردر)'+(p.method==="netted"?' · اتخصم من العهدة (سلّم '+Number(p.cash_handed||0)+' ج.م)':' · كاش')+(p.paid_by_name?' · '+esc(p.paid_by_name):'')+'</div>'}).join('');
   return '<h1 style="font-size:17px">🛵 أجور المناديب (مستحق: '+s.total_owed+' ج.م)</h1>'+rows+(pays?'<div class="card"><b>آخر الدفعات</b>'+pays+'</div>':'');
 }
 function cashOrderRow(o){
@@ -694,20 +699,21 @@ function courierRefresh(){
 }
 function courierBlock(){
   if(ROLE!=="delivery"||!COUR)return'';
-  var ST={off:["⚪","خارج الدوام"],free:["🟢","فاضي في المحل"],returning:["🟡","راجع للمحل"],on_trip:["🔵","في رحلة"]}[COUR.state]||["",""];
+  var ST={off:["⚪","خارج الدوام"],free:["🟢","متاح — هتتبلّغ لما يتعيّن لك أوردر"],on_trip:["🔵","في رحلة"]}[COUR.state]||["",""];
   var h='<div class="card"><b>'+ST[0]+' حالتك: '+ST[1]+'</b>';
   if(COUR.offer){
     h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>🛵 اتعيّن لك أوردر — اضغط "تمام" خلال '+Math.max(COUR.offer.remaining_s,0)+' ثانية</b>'+
       COUR.offer.orders.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.items+' صنف · '+o.total+' ج.م'+(o.address?' · 📍 '+esc(o.address):'')+'</div>'}).join('')+
       '<div style="margin-top:10px"><button class="big" style="width:100%" data-offacc="'+COUR.offer.id+'">✅ تمام</button></div></div>';
   }
-  if(COUR.to_return&&COUR.to_return.length)h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>↩️ أوردر اتلغى ومعاك — رجّعه المحل</b>'+COUR.to_return.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.total+' ج.م</div>'}).join('')+'<button class="big" id="cReturned" style="width:100%;margin-top:8px">📦 رجّعت الأوردر</button><p class="mute" style="margin:6px 0 0">بعد ما تضغط، مدير التشغيل بيأكد الاستلام وبعدها تقدر تضغط "وصلت المحل".</p></div>';
+  if(COUR.to_return&&COUR.to_return.length)h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>↩️ أوردر اتلغى ومعاك — رجّعه المحل</b>'+COUR.to_return.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.total+' ج.م — ✅ اتحسب لك أجره '+Number(o.fee||0)+' ج.م والشركة هتحاسبك عليه</div>'}).join('')+(COUR.state==="on_trip"?'<p class="mute" style="margin:6px 0 0">الأوردر ده اتشال من رحلتك. كمّل باقي الأوردرات، وبعدها رجّعه المحل.</p>':'<button class="big" id="cReturned" style="width:100%;margin-top:8px">📦 رجّعت الأوردر</button><p class="mute" style="margin:6px 0 0">بعد ما تضغط، مدير التشغيل بيأكد الاستلام، وبعدها هيتبعتلك أوردر جاهز لو متاح، ولو مفيش هتستنى.</p>')+'</div>';
   if(COUR.rescue&&COUR.rescue.length)h+='<div style="background:var(--g2);border-radius:12px;padding:10px;margin-top:10px"><b>🚨 روح استلم أوردرات من مندوب عطلان</b>'+COUR.rescue.map(function(o){return '<div class="mute" style="margin-top:4px">أوردر #'+o.id+' · '+o.total+' ج.م'+(o.address?' · 📍 '+esc(o.address):'')+'</div>'}).join('')+(COUR.rescue[0].breakdown_lat?'<a class="chip" style="display:inline-block;margin-top:8px" target="_blank" href="https://maps.google.com/?q='+COUR.rescue[0].breakdown_lat+','+COUR.rescue[0].breakdown_lng+'">📍 افتح موقع العطل</a>':'')+'<button class="big" id="cRescuePicked" style="width:100%;margin-top:8px">✅ استلمت الأوردرات</button></div>';
-  if(COUR.trip&&COUR.trip.status==="assigned")h+='<p style="margin:10px 0 0;font-weight:600">📦 اتعيّنت لرحلة #'+COUR.trip.id+' — روح المحل واضغط "وصلت المحل". لما تستلم الأوردر اضغط "استلمت الأوردر" (أو مدير التشغيل يضغطها) وساعتها الرحلة تبدأ.</p>'+(COUR.state==="free"?'<button class="big" id="cReceived" style="width:100%;margin-top:8px">📦 استلمت الأوردر وماشي</button>':'');
+  if(COUR.trip&&COUR.trip.status==="assigned")h+='<p style="margin:10px 0 0;font-weight:600">📦 اتعيّنت لرحلة #'+COUR.trip.id+' — روح المحل واضغط "وصلت المحل". لما تستلم الأوردر اضغط "استلمت الأوردر" (أو مدير التشغيل يضغطها) وساعتها الرحلة تبدأ.</p>'+(COUR.at_store_since?'<button class="big" id="cReceived" style="width:100%;margin-top:8px">📦 استلمت الأوردر وماشي</button>':'');
   var btns='';
-  if(COUR.state!=="on_trip"&&COUR.state!=="free"&&!(COUR.to_return&&COUR.to_return.length))btns+='<button class="big" id="cArrive" style="flex:1">📍 وصلت المحل</button>';
-  if(COUR.state==="free"&&!(COUR.trip&&COUR.trip.status==="assigned"))btns+='<span class="mute" style="align-self:center;flex:1">أنت فاضي وبتستنى أوردر.</span>';
-  if(COUR.state==="free"||COUR.state==="returning")btns+='<button class="chip" id="cOff">🏠 انصراف</button>';
+  if(COUR.state==="off")btns+='<button class="big" id="cOn" style="flex:1">🟢 بدء الدوام</button>';
+  if(COUR.state!=="off"&&COUR.state!=="on_trip"&&COUR.trip&&COUR.trip.status==="assigned"&&!COUR.at_store_since&&!(COUR.to_return&&COUR.to_return.length))btns+='<button class="big" id="cArrive" style="flex:1">📍 وصلت المحل</button>';
+  if(COUR.state==="free"&&!(COUR.trip&&COUR.trip.status==="assigned"))btns+='<span class="mute" style="align-self:center;flex:1">أنت متاح. مش لازم تيجي المحل، هتتبلّغ لما يتعيّن لك أوردر.</span>';
+  if(COUR.state==="free")btns+='<button class="chip" id="cOff">🏠 انصراف</button>';
   if(btns)h+='<div style="display:flex;gap:8px;margin-top:10px">'+btns+'</div>';
   if(COUR.state==="on_trip")h+='<p class="mute" style="margin:10px 0 0">لما تخلّص كل أوردرات الرحلة، اضغط "وصلت المحل" عشان تبقى فاضي.</p><button class="chip" id="cBreak" style="margin-top:8px">🚨 عطلت العربية / الموتوسيكل</button>';
   return h+'</div>';
@@ -941,7 +947,7 @@ setInterval(function(){
   if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops"&&!TS_DIRTY)opsLoad();
 },15000);
 var TS_DIRTY=false;
-document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Bundle|Late)$/.test(e.target.id))TS_DIRTY=true});
+document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Grace|Bundle|Late)$/.test(e.target.id))TS_DIRTY=true});
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
@@ -1140,6 +1146,12 @@ document.addEventListener("click",function(e){
     apiCall("POST","/earnings/pay",{courier_id:Number(t.dataset.earnpay)}).then(function(r){
       toast(r&&r.ok?("تم تسجيل دفع "+r.amount+" ج.م"):((r&&r.message)||"تعذّر"));cashLoad()
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
+  if(t.dataset.earnnet){
+    if(!confirm("خصم مستحقات "+t.dataset.earnname+" من العهدة اللي معاه ("+t.dataset.earnheld+" ج.م)؟ هو هيسلّمك الباقي بس، وكل أوردراته هتتسجّل مسدّدة."))return;
+    t.disabled=true;
+    apiCall("POST","/earnings/pay",{courier_id:Number(t.dataset.earnnet),deduct_from_cash:true}).then(function(r){
+      toast(r&&r.ok?("تم الخصم "+r.amount+" ج.م — استلمت منه "+r.cash_handed+" ج.م"):((r&&r.message)||"تعذّر"));cashLoad()
+    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
   if(t.id==="znSave"){zonesSave();return}
   if(t.id==="znCancel"){ZN.edit=0;ZN.msg="";zonesRender();return}
   if(t.dataset.znedit){ZN.edit=Number(t.dataset.znedit);ZN.msg="";zonesRender();window.scrollTo(0,0);return}
@@ -1148,7 +1160,7 @@ document.addEventListener("click",function(e){
   if(t.id==="acSave"){auditSave();return}
   if(t.id==="audCanc"){auditLoad("canc");return}
   if(t.id==="audAsg"){auditLoad("asg");return}
-  if(t.id==="tsSave"){TS_DIRTY=false;tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
+  if(t.id==="tsSave"){TS_DIRTY=false;tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_grace_min:Number($("tsGrace").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
 
   if(t.dataset.ce){editCid=Number(t.dataset.ce);catV();return}
   if(t.id==="cCan"){editCid=0;catV();return}
@@ -1217,6 +1229,7 @@ document.addEventListener("click",function(e){
     return;
   }
   if(t.dataset.retok){tripAct("POST","/returns/"+t.dataset.retok+"/confirm",null,"اتأكد الاستلام ورجع المخزون ✅");return}
+  if(t.id==="cOn"){courierAct("/courier/on","تم بدء الدوام ✅");return}
   if(t.id==="cArrive"){courierAct("/courier/arrive","تم تسجيل وصولك ✅");return}
   if(t.id==="cOff"){if(confirm("تأكيد الانصراف؟"))courierAct("/courier/off","تم تسجيل انصرافك");return}
   if(t.dataset.offacc){courierAct("/trips/offers/"+t.dataset.offacc+"/accept","تم التأكيد ✅");return}

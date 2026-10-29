@@ -35,6 +35,14 @@ function init({ pool, requireAuth, express, withItems }) {
     return !!(r.rows[0] && r.rows[0].value === 'true');
   }
 
+  // Activation-code flow switch. OFF (default, SMS not live yet): the admin sets the employee's password directly.
+  // ON: employee gets a one-time code and sets his own password. Flip it in the Team screen when SMS goes live.
+  async function activationRequired(db = pool) {
+    const r = await db.query(`SELECT value FROM app_settings WHERE key='staff_activation_required'`);
+    return !!(r.rows[0] && r.rows[0].value === 'true');
+  }
+  function badPassword(pw) { return typeof pw !== 'string' || pw.length < 6; }
+
   // >>> Plug the real Egyptian SMS gateway in here when you subscribe. Until then it throws. <<<
   async function sendViaProvider(phone, text) {
     throw new Error('SMS provider not implemented yet');
@@ -55,7 +63,14 @@ function init({ pool, requireAuth, express, withItems }) {
   }
 
   // Wipes any password and issues a fresh one-time code. The account stays locked until it is used.
-  async function issueActivation(db, staffId, phone, actorId, action) {
+  async function issueActivation(db, staffId, phone, actorId, action, password) {
+    if (!(await activationRequired(db))) { // activation paused: set the password directly
+      if (badPassword(password)) { const e = new Error('password_required'); e.code = 'password_required'; throw e; }
+      const ph = await bcrypt.hash(password, 10);
+      await db.query(`UPDATE staff SET password_hash=$1, activation_code_hash=NULL, activation_expires_at=NULL, activation_attempts=0 WHERE id=$2`, [ph, staffId]);
+      await audit(db, action + '_direct', actorId, staffId, null);
+      return { sent: false, direct: true };
+    }
     const code = genCode();
     const hash = await bcrypt.hash(code, 10);
     await db.query(
@@ -99,7 +114,7 @@ function init({ pool, requireAuth, express, withItems }) {
 
   // ---------- manager: create / edit / reset (admin only) ----------
   router.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
-    const { name, phone, role, job_title, address, phone2, settlement_mode } = req.body;
+    const { name, phone, role, job_title, address, phone2, settlement_mode, password } = req.body;
     if (!ROLES.includes(role) || !name || !String(name).trim() || !phone || !String(phone).trim()) {
       return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
     }
@@ -107,6 +122,9 @@ function init({ pool, requireAuth, express, withItems }) {
       return res.status(400).json({ error: 'invalid_settlement_mode' });
     }
     try {
+      if (!(await activationRequired()) && badPassword(password)) {
+        return res.status(400).json({ error: 'password_required', message: 'اكتب كلمة سر للموظف (6 أحرف على الأقل).' });
+      }
       const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [String(phone).trim()]);
       if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
       let col = null;
@@ -120,8 +138,8 @@ function init({ pool, requireAuth, express, withItems }) {
         [String(name).trim(), String(phone).trim(), phone2 ? String(phone2).trim() : null, address ? String(address).trim() : null,
          role, job_title ? String(job_title).trim() : null, role === 'delivery' ? (settlement_mode || 'per_order') : null, col]);
       await audit(pool, 'staff_created', req.user.id, r.rows[0].id, { role });
-      const d = await issueActivation(pool, r.rows[0].id, r.rows[0].phone, req.user.id, 'activation_issued');
-      res.json({ ...r.rows[0], activation_sent: d.sent });
+      const d = await issueActivation(pool, r.rows[0].id, r.rows[0].phone, req.user.id, 'activation_issued', password);
+      res.json({ ...r.rows[0], activation_sent: d.sent, direct: !!d.direct });
     } catch (e) {
       console.error('staff-create failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّرت الإضافة.' });
@@ -158,10 +176,13 @@ function init({ pool, requireAuth, express, withItems }) {
       return res.status(400).json({ error: 'self', message: 'غيّر كلمة سرك من شاشة "حسابي".' });
     }
     try {
+      if (!(await activationRequired()) && badPassword(req.body && req.body.password)) {
+        return res.status(400).json({ error: 'password_required', message: 'اكتب كلمة السر الجديدة (6 أحرف على الأقل).' });
+      }
       const t = await pool.query('SELECT id, phone FROM staff WHERE id=$1', [req.params.id]);
       if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
-      const d = await issueActivation(pool, t.rows[0].id, t.rows[0].phone, req.user.id, 'password_reset');
-      res.json({ ok: true, activation_sent: d.sent });
+      const d = await issueActivation(pool, t.rows[0].id, t.rows[0].phone, req.user.id, 'password_reset', req.body && req.body.password);
+      res.json({ ok: true, activation_sent: d.sent, direct: !!d.direct });
     } catch (e) {
       console.error('reset failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّرت إعادة التعيين.' });
@@ -220,6 +241,18 @@ function init({ pool, requireAuth, express, withItems }) {
                       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [on ? 'true' : 'false']);
     await audit(pool, 'sms_switch', req.user.id, null, { enabled: on });
     res.json({ ok: true, enabled: on });
+  });
+
+  // ---------- activation-code switch (admin) ----------
+  router.get('/settings/activation', requireAuth('admin', 'ops', 'finance', 'prep', 'delivery'), async (req, res) => {
+    res.json({ required: await activationRequired() });
+  });
+  router.put('/settings/activation', requireAuth('admin'), async (req, res) => {
+    const on = req.body.required === true;
+    await pool.query(`INSERT INTO app_settings (key, value) VALUES ('staff_activation_required',$1)
+                      ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [on ? 'true' : 'false']);
+    await audit(pool, 'activation_switch', req.user.id, null, { required: on });
+    res.json({ ok: true, required: on });
   });
 
   // ---------- ops manager: assign orders ----------
@@ -287,7 +320,7 @@ function init({ pool, requireAuth, express, withItems }) {
     }
   });
 
-  return { router, issueActivation };
+  return { router, issueActivation, activationRequired, badPassword };
 }
 
 module.exports = { init };
