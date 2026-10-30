@@ -927,11 +927,13 @@ function ofRender(){
   var c=OF.draft||cur||{name:"",discount_type:"percent",discount_value:"",free_delivery:false,gift_product_id:null,gift_qty:1,promo_text:"",show_in_strip:true,min_amount:0,starts_at:"",ends_at:"",priority:100,stackable:true,active:true,scope_categories:[],scope_products:[]};
   var sel=function(arr,v){return arr.indexOf(v)>=0};
   var tabsHtml=OF.cat.categories.map(function(k,i){
-    return '<button type="button" class="chip oftab" data-oftab="'+i+'" style="flex:0 0 auto">'+esc((k.emoji||"")+" "+k.name)+' <span id="ofb'+i+'"></span></button>'}).join("");
+    return '<span style="flex:0 0 auto;display:flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:12px;padding:2px 6px 2px 2px">'+
+      '<input type="checkbox" class="ofcat" data-i="'+i+'" value="'+esc(k.name)+'"'+(sel(c.scope_categories,k.name)?' checked':'')+' style="width:22px;height:22px;margin:0 4px" aria-label="اختيار القسم كله">'+
+      '<button type="button" class="chip oftab" data-oftab="'+i+'" style="border:0">'+esc((k.emoji||"")+" "+k.name)+' <span id="ofb'+i+'"></span></button></span>'}).join("");
   var panelsHtml=OF.cat.categories.map(function(k,i){
     var ps=OF.cat.products.filter(function(p){return p.category===k.name});
     return '<div class="ofpanel" data-i="'+i+'" style="display:none">'+
-      '<label style="display:flex;gap:8px;align-items:center;font-weight:700;margin:8px 0"><input type="checkbox" class="ofcat" data-i="'+i+'" value="'+esc(k.name)+'"'+(sel(c.scope_categories,k.name)?' checked':'')+' style="width:18px;height:18px"> القسم كله ('+ps.length+' منتج)</label>'+
+      '<div class="mute" style="margin:8px 0">علّم المربع اللي جنب اسم القسم فوق لو عايز القسم كله ('+ps.length+' منتج)، أو اختار منتجات منه:</div>'+
       '<div class="ofwhole mute" style="display:none">✓ كل منتجات القسم ده مشمولة في العرض.</div>'+
       '<div class="oflist">'+(ps.length?ps.map(function(p){return '<label class="ofrow" data-n="'+esc(p.name)+'" style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" class="ofprod" data-cat="'+esc(k.name)+'" value="'+p.id+'"'+(sel(c.scope_products,p.id)?' checked':'')+' style="width:18px;height:18px"> '+esc((p.emoji||"")+" "+p.name)+'</label>'}).join(""):'<span class="mute">القسم ده مفيهوش منتجات</span>')+'</div></div>';
   }).join("");
@@ -940,7 +942,7 @@ function ofRender(){
     '<input id="ofSearch" placeholder="🔎 دوّر على منتج في القسم ده" style="'+inp+';margin-bottom:6px">'+panelsHtml+
     '<div id="ofSum" class="mute" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"></div>':"";
   var giftOpts='<option value="">بدون هدية</option>'+OF.cat.categories.map(function(k){var ps=OF.cat.products.filter(function(p){return p.category===k.name});return ps.length?'<optgroup label="'+esc(k.name)+'">'+ps.map(function(p){return '<option value="'+p.id+'"'+(c.gift_product_id===p.id?' selected':'')+'>'+esc((p.emoji||"")+" "+p.name)+'</option>'}).join("")+'</optgroup>':""}).join("");
-  var h='<h1 style="font-size:19px">🎁 العروض</h1>'+
+  var h='<h1 style="font-size:19px">🎁 العروض <span class="mute" style="font-size:12px;font-weight:400">(نسخة الشاشة 13)</span></h1>'+
     '<p class="mute" style="margin:0 0 10px">العرض بيتطبّق تلقائي على سلة العميل لو الشروط اتحققت، والسيرفر هو اللي بيحسبه لحظة تأكيد الطلب ويثبّته على الأوردر.</p>'+
     '<div class="card"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ofStackRef" style="width:18px;height:18px"'+(OF.stack?' checked':'')+'> السماح للعميل ياخد خصم الإحالة وخصم العرض مع بعض</label>'+
     '<p class="mute" style="margin:6px 0 0">مثال: العميل عنده خصم إحالة 20 ج، وفي عرض 30 ج. مفعّل = ياخد الخصمين (50 ج). مقفول = ياخد الأكبر بس (30 ج). التوصيل المجاني بيشتغل في الحالتين.</p></div>'+
@@ -1005,7 +1007,7 @@ function ofShowCat(i){
 function ofBadges(){
   var parts=[];
   document.querySelectorAll(".ofpanel").forEach(function(p){
-    var i=p.dataset.i,cb=p.querySelector(".ofcat"),n=p.querySelectorAll(".ofprod:checked").length,name=cb.value;
+    var i=p.dataset.i,cb=document.querySelector('.ofcat[data-i="'+i+'"]'),n=p.querySelectorAll(".ofprod:checked").length,name=cb.value;
     var b=$("ofb"+i);if(b)b.textContent=cb.checked?"✓":(n?"("+n+")":"");
     p.querySelector(".ofwhole").style.display=cb.checked?"block":"none";
     p.querySelector(".oflist").style.display=cb.checked?"none":"block";
