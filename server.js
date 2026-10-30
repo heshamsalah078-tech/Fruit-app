@@ -130,6 +130,8 @@ const cancelPolicy = require('./cancelPolicy').init({ pool, requireAuth, express
 app.use(cancelPolicy.router);
 const zones = require('./deliveryZones').init({ pool, requireAuth, express });
 app.use(zones.router);
+const offers = require('./offers').init({ pool, requireAuth, express });
+app.use(offers.router);
 const earnings = require('./courierEarnings').init({ pool, requireAuth, express });
 const etaCalc = require('./eta').init({ pool });
 app.use(earnings.router);
@@ -448,7 +450,7 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     // Delivery fee: looked up from the zones table at confirmation time and frozen on the order. The app's value is ignored.
     const zr = await zones.resolveForOrder(client, customer_id, req.body.zone_id);
     if (!zr.ok) { await client.query('ROLLBACK'); return res.status(zr.code === 'out_of_area' ? 422 : 400).json({ error: zr.code, message: zr.message }); }
-    const delivery_fee = zr.zone.fee;
+    let delivery_fee = zr.zone.fee;   // what the CUSTOMER pays (0 under a free-delivery offer); the zone price itself is kept in zone_fee
 
     // Lock and check AVAILABLE stock (physical minus already-reserved) for every item first
     for (const it of items) {
@@ -494,16 +496,25 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     }
 
     // Referral discount is computed here on the server (never trusted from the app).
-    const rd = await referral.computeDiscount(client, customer_id, items);
+    let rd = await referral.computeDiscount(client, customer_id, items);
     const itemsSum = items.reduce((a, it) => a + Number(it.quantity) * Number(it.unit_price), 0);
-    const serverTotal = Math.max(Math.round((itemsSum + Number(delivery_fee || 0) - rd.discount) * 100) / 100, 0);
+    // Offers (admin screen): evaluated here on the server with DB prices. Combining with the referral discount follows the admin's switch.
+    let ev = await offers.evaluate(client, items, { lock: true });
+    if (!(await offers.stackWithReferral(client))) {
+      if (ev.discount >= rd.discount) rd = { discount: 0, lines: [] }; else ev = offers.dropDiscounts(ev);
+    }
+    ev = offers.cap(ev, itemsSum - rd.discount);
+    if (ev.free_delivery) delivery_fee = 0;   // free delivery: company absorbs the zone price (kept in zone_fee, courier is paid from it)
+    const serverTotal = Math.max(Math.round((itemsSum + Number(delivery_fee || 0) - rd.discount - ev.discount) * 100) / 100, 0);
     const orderR = await client.query(
-      `INSERT INTO orders (customer_id, status, delivery_fee, zone_fee, reward_discount, total, payment_status, zone_id, zone_name)
-       VALUES ($1,'awaiting_prep',$2,$7,$3,$4,'due',$5,$6) RETURNING *`,
-      [customer_id, delivery_fee, rd.discount, serverTotal, zr.zone.id, zr.zone.name, zr.zone.fee]
+      `INSERT INTO orders (customer_id, status, delivery_fee, zone_fee, reward_discount, offers_discount, total, payment_status, zone_id, zone_name)
+       VALUES ($1,'awaiting_prep',$2,$7,$3,$8,$4,'due',$5,$6) RETURNING *`,
+      [customer_id, delivery_fee, rd.discount, serverTotal, zr.zone.id, zr.zone.name, zr.zone.fee, ev.discount]
     );
     const order = orderR.rows[0];
     await referral.recordDiscount(client, order.id, customer_id, rd.lines);
+    await offers.recordApplied(client, order.id, ev, zr.zone.fee);
+    order.offers_applied = ev.applied;
     order.referral_discount_lines = rd.lines;
     for (const it of items) {
       await client.query(
@@ -514,7 +525,27 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
       // Reserve only — no stock_movements row yet, nothing has physically left the warehouse.
       await client.query('UPDATE products SET reserved_qty = reserved_qty + $1 WHERE id=$2', [it.quantity, it.product_id]);
     }
+    // Gifts from offers: ordinary order lines at price 0 (reserved now, deducted on delivery, released on cancel like any item).
+    for (const g of (ev.gifts || [])) {
+      await client.query(
+        `INSERT INTO order_items (order_id, product_id, quantity, unit_price, line_total, is_gift) VALUES ($1,$2,$3,0,0,true)`,
+        [order.id, g.product_id, g.qty]);
+      await client.query('UPDATE products SET reserved_qty = reserved_qty + $1 WHERE id=$2', [g.qty, g.product_id]);
+    }
     await client.query('COMMIT');
+    // Offers that could not apply because their gift is out of stock: log + tell the admin (fire-and-forget, never affects the order).
+    if (ev.skipped && ev.skipped.length) {
+      offers.logSkips(pool, customer_id, ev.skipped).then(function (list) {
+        list.forEach(function (k) {
+          notifyAdmins({
+            title: '⚠️ عرض ما اتفعّلش',
+            body: 'عرض "' + k.name + '" ما اتطبّقش على أوردر لأن ' + (k.reason === 'gift_missing' ? 'منتج الهدية اتمسح' : 'الهدية "' + k.gift_name + '" خلصت من المخزون (المطلوب ' + k.needed + '، المتاح ' + k.available + ')') + '.',
+            tag: 'offer-skip-' + k.offer_id,
+            url: '/staff/#offers'
+          }).catch(function (e) { console.error('notify offer skip failed', e.message); });
+        });
+      }).catch(function (e) { console.error('offer skip log failed', e.message); });
+    }
     prepAssign.kick(); trips.kick();
     res.json(order);
   } catch (e) {
