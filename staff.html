@@ -314,7 +314,7 @@ function opsV(){
   if(!OPS.staff.prep.length)html+='<p class="mute">⚠️ لا يوجد موظف تجهيز مُفعَّل.</p>';
   html+=list.length?list.map(function(o){
     return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+(o.address?' · 📍 '+esc(o.address):'')+
-      '<br><span class="mute">'+(o.items||[]).map(function(i){return esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity}).join('، ')+'</span><br><b>'+o.total+' ج.م</b> · <span class="mute">'+dt(o.created_at)+'</span>'+
+      '<br><span class="mute">'+(o.items||[]).map(function(i){return esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+(i.is_gift?' 🎁 هدية':'')}).join('، ')+'</span><br><b>'+o.total+' ج.م</b> · <span class="mute">'+dt(o.created_at)+'</span>'+
       opsSel("prep",o)+'</div>'}).join(''):'<p class="mute">لا توجد طلبات '+(OPS.onlyUn?'ناقصة تعيين':'مفتوحة')+' حالياً 🎉</p>';
   el.innerHTML=html;
 }
@@ -685,7 +685,7 @@ function ocard(o,k){
   if(ROLE==="prep"&&k==="prep")act=o.status==="awaiting_prep"?["preparing","▶ بدء التجهيز"]:["awaiting_delivery","✅ انتهاء التجهيز"];
   if(ROLE==="delivery"&&k==="del")act=o.status==="awaiting_delivery"?null:["delivered","💵 تم التسليم وتحصيل النقدية"];
   return '<div class="card"><b>طلب #'+o.id+'</b> — '+(STN[o.status]||o.status)+'<br>'+esc(o.customer_name)+' · '+esc(o.customer_phone)+(o.address?'<br>📍 '+esc(o.address):'')+
-    '<ul class="items">'+(o.items||[]).map(function(i){return '<li>'+esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+' '+esc(i.unit)+'</li>'}).join('')+'</ul>'+
+    '<ul class="items">'+(o.items||[]).map(function(i){return '<li>'+esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+' '+esc(i.unit)+(i.is_gift?' 🎁 <b>هدية — ضيفها للأوردر</b>':'')+'</li>'}).join('')+'</ul>'+
     '<b>الإجمالي: '+o.total+' ج.م</b>'+slaBadge(o)+timesBlock(o)+
     (act?'<button class="big" style="margin-top:8px" data-ost="'+o.id+':'+act[0]+'">'+act[1]+'</button>':(ROLE==="admin"?'<p class="mute" style="margin:6px 0 0">عرض فقط</p>':(ROLE==="delivery"&&o.status==="awaiting_delivery"?'<p class="mute" style="margin:6px 0 0">⏳ بانتظار مدير التشغيل ليبدأ الرحلة</p>':'')))+
     '</div>';
@@ -895,14 +895,21 @@ function zonesSave(){
 }
 
 /* ---------- offers (admin) ---------- */
-var OF={rows:null,stack:true,cat:{products:[],categories:[]},rep:{},edit:0,msg:""};
+var OF={rows:null,stack:true,cat:{products:[],categories:[]},rep:{},edit:0,msg:"",draft:null,open:{},loadErr:"",skips:[]};
+function ofRefresh(){if($("ofName"))OF.draft=ofBody();ofRender()}
 function ofLoad(){
-  apiCall("GET","/offers").then(function(r){OF.rows=(r&&r.offers)?r.offers:[];OF.stack=!(r&&r.stack_with_referral===false);ofRender()}).catch(function(){OF.rows=[];ofRender()});
-  apiCall("GET","/offers/catalog").then(function(r){if(r&&r.products){OF.cat=r;ofRender()}}).catch(function(){});
-  apiCall("GET","/offers/report?days=30").then(function(r){if(r&&r.by_offer){OF.rep=r.by_offer;ofRender()}}).catch(function(){});
+  apiCall("GET","/offers").then(function(r){OF.rows=(r&&r.offers)?r.offers:[];OF.stack=!(r&&r.stack_with_referral===false);ofRefresh()}).catch(function(){OF.rows=[];ofRefresh()});
+  apiCall("GET","/offers/catalog").then(function(r){if(r&&r.products){OF.cat=r;OF.loadErr=""}else OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()}).catch(function(){OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()});
+  apiCall("GET","/offers/skips?days=30").then(function(r){if(r&&r.skips){OF.skips=r.skips;ofRefresh()}}).catch(function(){});
+  apiCall("GET","/offers/report?days=30").then(function(r){if(r&&r.by_offer){OF.rep=r.by_offer;ofRefresh()}}).catch(function(){});
 }
 function ofDesc(o){
-  var res=o.result_type==="percent"?("خصم "+o.result_value+"%"):o.result_type==="amount"?("خصم "+o.result_value+" ج.م"):"توصيل مجاني";
+  var rp=[];
+  if(o.discount_type==="percent")rp.push("خصم "+o.discount_value+"%");
+  if(o.discount_type==="amount")rp.push("خصم "+o.discount_value+" ج.م");
+  if(o.free_delivery)rp.push("توصيل مجاني");
+  if(o.gift_product_id){var gp=OF.cat.products.find(function(x){return x.id===o.gift_product_id});rp.push("هدية: "+(gp?gp.name:"منتج")+" × "+o.gift_qty)}
+  var res=rp.join(" + ")||"—";
   var sc=[];
   (o.scope_categories||[]).forEach(function(c){sc.push("قسم "+c)});
   (o.scope_products||[]).forEach(function(id){var p=OF.cat.products.find(function(x){return x.id===id});sc.push(p?p.name:("منتج #"+id))});
@@ -916,23 +923,41 @@ function ofRender(){
   var inp='width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)';
   var lab='<span class="mute" style="display:block;margin:10px 0 4px">';
   var cur=OF.edit?(OF.rows||[]).find(function(x){return x.id===OF.edit}):null;
-  var c=cur||{name:"",result_type:"percent",result_value:"",min_amount:0,starts_at:"",ends_at:"",priority:100,stackable:true,active:true,scope_categories:[],scope_products:[]};
-  var cats=OF.cat.categories.map(function(k){return '<label style="display:flex;gap:8px;align-items:center;margin:4px 0"><input type="checkbox" class="ofcat" value="'+esc(k)+'"'+(c.scope_categories.indexOf(k)>=0?' checked':'')+' style="width:18px;height:18px"> '+esc(k)+'</label>'}).join("");
-  var prods=OF.cat.products.map(function(p){return '<label style="display:flex;gap:8px;align-items:center;margin:4px 0"><input type="checkbox" class="ofprod" value="'+p.id+'"'+(c.scope_products.indexOf(p.id)>=0?' checked':'')+' style="width:18px;height:18px"> '+esc((p.emoji||"")+" "+p.name)+' <span class="mute">('+esc(p.category)+')</span></label>'}).join("");
+  var c=OF.draft||cur||{name:"",discount_type:"percent",discount_value:"",free_delivery:false,gift_product_id:null,gift_qty:1,min_amount:0,starts_at:"",ends_at:"",priority:100,stackable:true,active:true,scope_categories:[],scope_products:[]};
+  var sel=function(arr,v){return arr.indexOf(v)>=0};
+  var scopeHtml=OF.cat.categories.map(function(k,i){
+    var ps=OF.cat.products.filter(function(p){return p.category===k.name});
+    var whole=sel(c.scope_categories,k.name);
+    var n=ps.filter(function(p){return sel(c.scope_products,p.id)}).length;
+    var open=!!OF.open[k.name];
+    return '<div style="border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin:8px 0">'+
+      '<label style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="checkbox" class="ofcat" data-i="'+i+'" value="'+esc(k.name)+'"'+(whole?' checked':'')+' style="width:18px;height:18px"> '+esc((k.emoji||"")+" "+k.name)+' — القسم كله</label>'+
+      '<button type="button" class="chip" data-ofopen="'+i+'" style="margin-top:6px">'+(open?'▲ إخفاء المنتجات':'▼ اختيار منتجات من القسم')+' ('+ps.length+')'+(n?' · '+n+' مختار':'')+'</button>'+
+      '<div id="ofp'+i+'" data-cat="'+esc(k.name)+'" style="display:'+(open&&!whole?'block':'none')+';margin-top:6px">'+
+      (ps.length?ps.map(function(p){return '<label class="ofrow" data-n="'+esc(p.name)+'" style="display:flex;gap:8px;align-items:center;margin:5px 0"><input type="checkbox" class="ofprod" data-cat="'+esc(k.name)+'" value="'+p.id+'"'+(sel(c.scope_products,p.id)?' checked':'')+' style="width:18px;height:18px"> '+esc((p.emoji||"")+" "+p.name)+'</label>'}).join(""):'<span class="mute">القسم ده مفيهوش منتجات</span>')+
+      '</div></div>';
+  }).join("");
+  var giftOpts='<option value="">بدون هدية</option>'+OF.cat.categories.map(function(k){var ps=OF.cat.products.filter(function(p){return p.category===k.name});return ps.length?'<optgroup label="'+esc(k.name)+'">'+ps.map(function(p){return '<option value="'+p.id+'"'+(c.gift_product_id===p.id?' selected':'')+'>'+esc((p.emoji||"")+" "+p.name)+'</option>'}).join("")+'</optgroup>':""}).join("");
   var h='<h1 style="font-size:19px">🎁 العروض</h1>'+
     '<p class="mute" style="margin:0 0 10px">العرض بيتطبّق تلقائي على سلة العميل لو الشروط اتحققت، والسيرفر هو اللي بيحسبه لحظة تأكيد الطلب ويثبّته على الأوردر.</p>'+
-    '<div class="card"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ofStackRef" style="width:18px;height:18px"'+(OF.stack?' checked':'')+'> خصم الإحالة يتجمع مع العروض</label>'+
-    '<p class="mute" style="margin:6px 0 0">لو مقفول: العميل ياخد الأكبر بس بين خصم الإحالة وخصومات العروض (التوصيل المجاني مش بيتأثر).</p></div>'+
-    '<div class="card"><b>'+(cur?'✏️ تعديل عرض':'➕ عرض جديد')+'</b>'+
+    '<div class="card"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ofStackRef" style="width:18px;height:18px"'+(OF.stack?' checked':'')+'> السماح للعميل ياخد خصم الإحالة وخصم العرض مع بعض</label>'+
+    '<p class="mute" style="margin:6px 0 0">مثال: العميل عنده خصم إحالة 20 ج، وفي عرض 30 ج. مفعّل = ياخد الخصمين (50 ج). مقفول = ياخد الأكبر بس (30 ج). التوصيل المجاني بيشتغل في الحالتين.</p></div>'+
+    (OF.skips.length?'<div class="card" style="border:1px solid #f0b429"><b>⚠️ عروض ما اتفعّلتش (آخر 30 يوم)</b><p class="mute" style="margin:6px 0">اتأكدت إن الأوردرات دي كانت مستحقة العرض، لكن الهدية مكانتش متاحة فالعرض ما اتطبّقش. زوّد مخزون الهدية.</p>'+OF.skips.map(function(k){return '<div style="margin:8px 0;padding-top:8px;border-top:1px solid var(--line)"><b>'+esc(k.name)+'</b><div class="mute">الهدية: '+esc(k.gift_name||"اتمسحت")+' · ما اتفعّلش '+k.times+' مرة · آخر مرة '+esc(k.last_at)+'<br>آخر مرة المطلوب '+k.needed+' والمتاح '+k.available+'</div></div>'}).join("")+'</div>':'')+
+        '<div class="card"><b>'+(cur?'✏️ تعديل عرض':'➕ عرض جديد')+'</b>'+
     lab+'اسم العرض (بيظهر للعميل)</span><input id="ofName" value="'+esc(c.name)+'" style="'+inp+'">'+
-    lab+'نوع العرض</span><select id="ofType" style="'+inp+'"><option value="percent"'+(c.result_type==="percent"?' selected':'')+'>خصم نسبة %</option><option value="amount"'+(c.result_type==="amount"?' selected':'')+'>خصم مبلغ ثابت</option><option value="free_delivery"'+(c.result_type==="free_delivery"?' selected':'')+'>توصيل مجاني (على الشركة)</option></select>'+
-    lab+'قيمة الخصم (نسبة أو مبلغ) — تتجاهل لو توصيل مجاني</span><input id="ofVal" type="number" min="0" step="any" value="'+(c.result_value||"")+'" style="'+inp+'">'+
+    '<div style="font-weight:700;margin-top:12px">العرض بيدي العميل إيه؟ (تقدر تختار أكتر من حاجة)</div>'+
+    lab+'1) الخصم</span><select id="ofDType" style="'+inp+'"><option value="none"'+(c.discount_type==="none"?' selected':'')+'>بدون خصم</option><option value="percent"'+(c.discount_type==="percent"?' selected':'')+'>خصم نسبة %</option><option value="amount"'+(c.discount_type==="amount"?' selected':'')+'>خصم مبلغ ثابت</option></select>'+
+    lab+'قيمة الخصم: لو نسبة اكتب الرقم (10 = خصم 10%). لو مبلغ اكتبه بالجنيه (30 = خصم 30 ج). لو بدون خصم سيبه فاضي</span><input id="ofVal" type="number" min="0" step="any" value="'+(c.discount_value||"")+'" style="'+inp+'">'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="ofFree" style="width:18px;height:18px"'+(c.free_delivery?' checked':'')+'> 2) توصيل مجاني (على الشركة)</label>'+
+    lab+'3) هدية (منتج بيتضاف للأوردر مجاناً)</span><select id="ofGift" style="'+inp+'">'+giftOpts+'</select>'+
+    lab+'كمية الهدية</span><input id="ofGiftQty" type="number" min="0" step="any" value="'+(c.gift_qty||1)+'" style="'+inp+'">'+
     lab+'الحد الأدنى للمشتريات (ج.م) — بيتحسب على المنتجات اللي العرض عليها. صفر = بدون حد</span><input id="ofMin" type="number" min="0" step="any" value="'+c.min_amount+'" style="'+inp+'">'+
     lab+'من تاريخ (اختياري، بتوقيت القاهرة)</span><input id="ofFrom" type="datetime-local" value="'+(c.starts_at||"")+'" style="'+inp+'">'+
     lab+'إلى تاريخ (اختياري)</span><input id="ofTo" type="datetime-local" value="'+(c.ends_at||"")+'" style="'+inp+'">'+
-    lab+'العرض على إيه؟ (سيبهم كلهم فاضيين = كل المنتجات)</span>'+
-    '<div style="font-weight:700;margin:6px 0 2px">الأقسام</div>'+(cats||'<span class="mute">لسه مفيش أقسام</span>')+
-    '<div style="font-weight:700;margin:10px 0 2px">منتجات بعينها</div><div style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px">'+(prods||'<span class="mute">لسه مفيش منتجات</span>')+'</div>'+
+    lab+'العرض على إيه؟ سيب كل حاجة فاضية = كل المنتجات. أو علّم قسم كامل، أو افتح القسم واختار منتجات منه. وتقدر تختار أكتر من قسم.</span>'+
+    (OF.loadErr?'<p style="color:#b42318;font-weight:600;margin:6px 0">⚠️ '+esc(OF.loadErr)+' — اقفل الشاشة وافتحها تاني.</p>':'')+
+    '<input id="ofSearch" placeholder="🔎 دوّر على منتج بالاسم" style="'+inp+';margin:6px 0">'+
+    (scopeHtml||'<span class="mute">لسه مفيش أقسام. أضف أقسام ومنتجات الأول من شاشة الأقسام.</span>')+
     lab+'الأولوية (رقم أصغر = يتحسب الأول)</span><input id="ofPri" type="number" min="1" max="999" value="'+c.priority+'" style="'+inp+'">'+
     '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="ofStack" style="width:18px;height:18px"'+(c.stackable?' checked':'')+'> يتجمع مع عروض تانية</label>'+
     '<label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="ofActive" style="width:18px;height:18px"'+(c.active?' checked':'')+'> مفعّل</label>'+
@@ -950,17 +975,33 @@ function ofRender(){
 }
 function ofBody(){
   function vals(cls){return Array.prototype.map.call(document.querySelectorAll(cls+":checked"),function(x){return x.value})}
-  return {name:$("ofName").value.trim(),result_type:$("ofType").value,result_value:Number($("ofVal").value||0),min_amount:Number($("ofMin").value||0),
+  return {name:$("ofName").value.trim(),discount_type:$("ofDType").value,discount_value:Number($("ofVal").value||0),free_delivery:$("ofFree").checked,gift_product_id:$("ofGift").value?Number($("ofGift").value):null,gift_qty:Number($("ofGiftQty").value||1),min_amount:Number($("ofMin").value||0),
     starts_at:$("ofFrom").value||null,ends_at:$("ofTo").value||null,priority:Number($("ofPri").value||100),stackable:$("ofStack").checked,active:$("ofActive").checked,
     scope_categories:vals(".ofcat"),scope_products:vals(".ofprod").map(Number)};
 }
+function ofBodyClean(){
+  var b=ofBody();
+  var skip={};b.scope_categories.forEach(function(k){skip[k]=1});
+  b.scope_products=Array.prototype.filter.call(document.querySelectorAll(".ofprod:checked"),function(x){return !skip[x.dataset.cat]}).map(function(x){return Number(x.value)});
+  return b;
+}
 function ofSave(){
-  var req=OF.edit?apiCall("PUT","/offers/"+OF.edit,ofBody()):apiCall("POST","/offers",ofBody());
+  var body=ofBodyClean();OF.draft=body;
+  var req=OF.edit?apiCall("PUT","/offers/"+OF.edit,body):apiCall("POST","/offers",body);
   req.then(function(r){
-    if(r&&r.ok){OF.msg="✅ تم الحفظ";OF.edit=0;ofLoad()}else{OF.msg="⚠️ "+((r&&r.message)||"تعذّر الحفظ");ofRender()}
+    if(r&&r.ok){OF.msg="✅ تم الحفظ";OF.edit=0;OF.draft=null;ofRender();ofLoad()}else{OF.msg="⚠️ "+((r&&r.message)||"تعذّر الحفظ");ofRender()}
   }).catch(function(){OF.msg="⚠️ تعذّر الاتصال";ofRender()});
 }
-
+function ofSearch(q){
+  q=(q||"").trim();
+  document.querySelectorAll(".ofrow").forEach(function(r){r.style.display=(!q||r.dataset.n.indexOf(q)>=0)?"flex":"none"});
+  document.querySelectorAll("[id^=ofp]").forEach(function(c){
+    var whole=document.querySelector('.ofcat[value="'+c.dataset.cat.replace(/"/g,'\\"')+'"]');
+    var any=Array.prototype.some.call(c.querySelectorAll(".ofrow"),function(r){return r.style.display!=="none"});
+    c.style.display=(q?(any&&!(whole&&whole.checked)):(OF.open[c.dataset.cat]&&!(whole&&whole.checked)))?"block":"none";
+  });
+}
+document.addEventListener("input",function(e){if(e.target&&e.target.id==="ofSearch")ofSearch(e.target.value)});
 /* ---------- auth ---------- */
 function startApp(){
   if(!TOK||!ROLE){
@@ -1223,9 +1264,11 @@ document.addEventListener("click",function(e){
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
   if(t.id==="znSave"){zonesSave();return}
   if(t.id==="ofSave"){ofSave();return}
-  if(t.id==="ofCancel"){OF.edit=0;OF.msg="";ofRender();return}
+  if(t.classList&&t.classList.contains("ofcat")){ofSearch($("ofSearch")?$("ofSearch").value:"");return}
+  if(t.dataset&&t.dataset.ofopen!==undefined){var cc=$("ofp"+t.dataset.ofopen);var k=cc.dataset.cat;OF.open[k]=!OF.open[k];OF.draft=ofBody();ofRender();return}
+  if(t.id==="ofCancel"){OF.edit=0;OF.msg="";OF.draft=null;ofRender();return}
   if(t.id==="ofStackRef"){apiCall("PUT","/offers/settings",{stack_with_referral:t.checked}).then(function(r){toast(r&&r.ok?"تم":"تعذّر");ofLoad()});return}
-  if(t.dataset.ofedit){OF.edit=Number(t.dataset.ofedit);OF.msg="";ofRender();window.scrollTo(0,0);return}
+  if(t.dataset.ofedit){OF.edit=Number(t.dataset.ofedit);OF.msg="";OF.draft=null;ofRender();window.scrollTo(0,0);return}
   if(t.dataset.oftog){var oo=OF.rows.find(function(x){return x.id===Number(t.dataset.oftog)});var b=Object.assign({},oo,{active:!oo.active});apiCall("PUT","/offers/"+oo.id,b).then(function(r){toast(r&&r.ok?"تم":((r&&r.message)||"تعذّر"));ofLoad()});return}
   if(t.dataset.ofdel){if(!confirm("حذف العرض؟ الأوردرات القديمة هتفضل محتفظة بما حصلت عليه."))return;apiCall("DELETE","/offers/"+t.dataset.ofdel).then(function(r){toast(r&&r.ok?"تم الحذف":"تعذّر");ofLoad()});return}
   if(t.id==="znCancel"){ZN.edit=0;ZN.msg="";zonesRender();return}
