@@ -895,11 +895,11 @@ function zonesSave(){
 }
 
 /* ---------- offers (admin) ---------- */
-var OF={rows:null,stack:true,cat:{products:[],categories:[]},rep:{},edit:0,msg:"",draft:null,open:{},loadErr:"",skips:[]};
+var OF={rows:null,stack:true,cat:{products:[],categories:[]},rep:{},edit:0,msg:"",draft:null,curCat:0,loadErr:"",skips:[]};
 function ofRefresh(){if($("ofName"))OF.draft=ofBody();ofRender()}
 function ofLoad(){
   apiCall("GET","/offers").then(function(r){OF.rows=(r&&r.offers)?r.offers:[];OF.stack=!(r&&r.stack_with_referral===false);ofRefresh()}).catch(function(){OF.rows=[];ofRefresh()});
-  apiCall("GET","/offers/catalog").then(function(r){if(r&&r.products){OF.cat=r;OF.loadErr=""}else OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()}).catch(function(){OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()});
+  apiCall("GET","/offers/catalog").then(function(r){if(r&&r.products){OF.cat={products:r.products,categories:(r.categories||[]).map(function(k){return typeof k==="string"?{name:k,emoji:""}:{name:k.name,emoji:k.emoji||""}})};OF.loadErr=""}else OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()}).catch(function(){OF.loadErr="تعذّر تحميل الأقسام والمنتجات";ofRefresh()});
   apiCall("GET","/offers/skips?days=30").then(function(r){if(r&&r.skips){OF.skips=r.skips;ofRefresh()}}).catch(function(){});
   apiCall("GET","/offers/report?days=30").then(function(r){if(r&&r.by_offer){OF.rep=r.by_offer;ofRefresh()}}).catch(function(){});
 }
@@ -917,26 +917,28 @@ function ofDesc(o){
   if(o.min_amount>0)parts.push("لو المشتريات "+o.min_amount+" ج.م أو أكتر");
   if(o.starts_at||o.ends_at)parts.push("من "+(o.starts_at?o.starts_at.replace("T"," "):"الآن")+" إلى "+(o.ends_at?o.ends_at.replace("T"," "):"بلا نهاية"));
   parts.push(o.stackable?"بيتجمع مع عروض تانية":"مش بيتجمع مع غيره");
+  if(o.show_in_strip===false)parts.push("مش ظاهر في الشريط");
   return parts.join(" · ");
 }
 function ofRender(){
   var inp='width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)';
   var lab='<span class="mute" style="display:block;margin:10px 0 4px">';
   var cur=OF.edit?(OF.rows||[]).find(function(x){return x.id===OF.edit}):null;
-  var c=OF.draft||cur||{name:"",discount_type:"percent",discount_value:"",free_delivery:false,gift_product_id:null,gift_qty:1,min_amount:0,starts_at:"",ends_at:"",priority:100,stackable:true,active:true,scope_categories:[],scope_products:[]};
+  var c=OF.draft||cur||{name:"",discount_type:"percent",discount_value:"",free_delivery:false,gift_product_id:null,gift_qty:1,promo_text:"",show_in_strip:true,min_amount:0,starts_at:"",ends_at:"",priority:100,stackable:true,active:true,scope_categories:[],scope_products:[]};
   var sel=function(arr,v){return arr.indexOf(v)>=0};
-  var scopeHtml=OF.cat.categories.map(function(k,i){
+  var tabsHtml=OF.cat.categories.map(function(k,i){
+    return '<button type="button" class="chip oftab" data-oftab="'+i+'" style="flex:0 0 auto">'+esc((k.emoji||"")+" "+k.name)+' <span id="ofb'+i+'"></span></button>'}).join("");
+  var panelsHtml=OF.cat.categories.map(function(k,i){
     var ps=OF.cat.products.filter(function(p){return p.category===k.name});
-    var whole=sel(c.scope_categories,k.name);
-    var n=ps.filter(function(p){return sel(c.scope_products,p.id)}).length;
-    var open=!!OF.open[k.name];
-    return '<div style="border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin:8px 0">'+
-      '<label style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="checkbox" class="ofcat" data-i="'+i+'" value="'+esc(k.name)+'"'+(whole?' checked':'')+' style="width:18px;height:18px"> '+esc((k.emoji||"")+" "+k.name)+' — القسم كله</label>'+
-      '<button type="button" class="chip" data-ofopen="'+i+'" style="margin-top:6px">'+(open?'▲ إخفاء المنتجات':'▼ اختيار منتجات من القسم')+' ('+ps.length+')'+(n?' · '+n+' مختار':'')+'</button>'+
-      '<div id="ofp'+i+'" data-cat="'+esc(k.name)+'" style="display:'+(open&&!whole?'block':'none')+';margin-top:6px">'+
-      (ps.length?ps.map(function(p){return '<label class="ofrow" data-n="'+esc(p.name)+'" style="display:flex;gap:8px;align-items:center;margin:5px 0"><input type="checkbox" class="ofprod" data-cat="'+esc(k.name)+'" value="'+p.id+'"'+(sel(c.scope_products,p.id)?' checked':'')+' style="width:18px;height:18px"> '+esc((p.emoji||"")+" "+p.name)+'</label>'}).join(""):'<span class="mute">القسم ده مفيهوش منتجات</span>')+
-      '</div></div>';
+    return '<div class="ofpanel" data-i="'+i+'" style="display:none">'+
+      '<label style="display:flex;gap:8px;align-items:center;font-weight:700;margin:8px 0"><input type="checkbox" class="ofcat" data-i="'+i+'" value="'+esc(k.name)+'"'+(sel(c.scope_categories,k.name)?' checked':'')+' style="width:18px;height:18px"> القسم كله ('+ps.length+' منتج)</label>'+
+      '<div class="ofwhole mute" style="display:none">✓ كل منتجات القسم ده مشمولة في العرض.</div>'+
+      '<div class="oflist">'+(ps.length?ps.map(function(p){return '<label class="ofrow" data-n="'+esc(p.name)+'" style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" class="ofprod" data-cat="'+esc(k.name)+'" value="'+p.id+'"'+(sel(c.scope_products,p.id)?' checked':'')+' style="width:18px;height:18px"> '+esc((p.emoji||"")+" "+p.name)+'</label>'}).join(""):'<span class="mute">القسم ده مفيهوش منتجات</span>')+'</div></div>';
   }).join("");
+  var scopeHtml=OF.cat.categories.length?
+    '<div style="display:flex;gap:8px;overflow-x:auto;padding:4px 0 8px">'+tabsHtml+'</div>'+
+    '<input id="ofSearch" placeholder="🔎 دوّر على منتج في القسم ده" style="'+inp+';margin-bottom:6px">'+panelsHtml+
+    '<div id="ofSum" class="mute" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"></div>':"";
   var giftOpts='<option value="">بدون هدية</option>'+OF.cat.categories.map(function(k){var ps=OF.cat.products.filter(function(p){return p.category===k.name});return ps.length?'<optgroup label="'+esc(k.name)+'">'+ps.map(function(p){return '<option value="'+p.id+'"'+(c.gift_product_id===p.id?' selected':'')+'>'+esc((p.emoji||"")+" "+p.name)+'</option>'}).join("")+'</optgroup>':""}).join("");
   var h='<h1 style="font-size:19px">🎁 العروض</h1>'+
     '<p class="mute" style="margin:0 0 10px">العرض بيتطبّق تلقائي على سلة العميل لو الشروط اتحققت، والسيرفر هو اللي بيحسبه لحظة تأكيد الطلب ويثبّته على الأوردر.</p>'+
@@ -951,12 +953,13 @@ function ofRender(){
     '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="ofFree" style="width:18px;height:18px"'+(c.free_delivery?' checked':'')+'> 2) توصيل مجاني (على الشركة)</label>'+
     lab+'3) هدية (منتج بيتضاف للأوردر مجاناً)</span><select id="ofGift" style="'+inp+'">'+giftOpts+'</select>'+
     lab+'كمية الهدية</span><input id="ofGiftQty" type="number" min="0" step="any" value="'+(c.gift_qty||1)+'" style="'+inp+'">'+
+    lab+'جملة دعائية للعميل (اختياري) — بتظهر في شريط العروض بدل النص التلقائي. مثال: "اطلب خضار بـ 300 جنيه وخد توصيل مجاني!"</span><input id="ofPromo" maxlength="160" value="'+esc(c.promo_text||"")+'" style="'+inp+'">'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="ofStrip" style="width:18px;height:18px"'+(c.show_in_strip!==false?' checked':'')+'> يظهر في شريط العروض للعميل (لو مقفول العرض بيشتغل بس من غير إعلان)</label>'+
     lab+'الحد الأدنى للمشتريات (ج.م) — بيتحسب على المنتجات اللي العرض عليها. صفر = بدون حد</span><input id="ofMin" type="number" min="0" step="any" value="'+c.min_amount+'" style="'+inp+'">'+
     lab+'من تاريخ (اختياري، بتوقيت القاهرة)</span><input id="ofFrom" type="datetime-local" value="'+(c.starts_at||"")+'" style="'+inp+'">'+
     lab+'إلى تاريخ (اختياري)</span><input id="ofTo" type="datetime-local" value="'+(c.ends_at||"")+'" style="'+inp+'">'+
-    lab+'العرض على إيه؟ سيب كل حاجة فاضية = كل المنتجات. أو علّم قسم كامل، أو افتح القسم واختار منتجات منه. وتقدر تختار أكتر من قسم.</span>'+
+    lab+'العرض على إيه؟ سيب كل حاجة فاضية = كل المنتجات. أو اتنقّل بين الأقسام: علّم القسم كله، أو اختار منتجات منه. واللي اخترته من أي قسم بيفضل محفوظ.</span>'+
     (OF.loadErr?'<p style="color:#b42318;font-weight:600;margin:6px 0">⚠️ '+esc(OF.loadErr)+' — اقفل الشاشة وافتحها تاني.</p>':'')+
-    '<input id="ofSearch" placeholder="🔎 دوّر على منتج بالاسم" style="'+inp+';margin:6px 0">'+
     (scopeHtml||'<span class="mute">لسه مفيش أقسام. أضف أقسام ومنتجات الأول من شاشة الأقسام.</span>')+
     lab+'الأولوية (رقم أصغر = يتحسب الأول)</span><input id="ofPri" type="number" min="1" max="999" value="'+c.priority+'" style="'+inp+'">'+
     '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="ofStack" style="width:18px;height:18px"'+(c.stackable?' checked':'')+'> يتجمع مع عروض تانية</label>'+
@@ -972,11 +975,12 @@ function ofRender(){
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="chip" data-ofedit="'+o.id+'">تعديل</button><button class="chip" data-oftog="'+o.id+'">'+(o.active?'إيقاف':'تفعيل')+'</button><button class="chip" data-ofdel="'+o.id+'">حذف</button></div></div>';
   }).join(""):'<p class="mute">مفيش عروض لسه. أضف أول عرض من فوق.</p>';
   $("offers").innerHTML=h;
+  if(OF.cat.categories.length){if(OF.curCat>=OF.cat.categories.length)OF.curCat=0;ofShowCat(OF.curCat);ofBadges()}
 }
 function ofBody(){
   function vals(cls){return Array.prototype.map.call(document.querySelectorAll(cls+":checked"),function(x){return x.value})}
   return {name:$("ofName").value.trim(),discount_type:$("ofDType").value,discount_value:Number($("ofVal").value||0),free_delivery:$("ofFree").checked,gift_product_id:$("ofGift").value?Number($("ofGift").value):null,gift_qty:Number($("ofGiftQty").value||1),min_amount:Number($("ofMin").value||0),
-    starts_at:$("ofFrom").value||null,ends_at:$("ofTo").value||null,priority:Number($("ofPri").value||100),stackable:$("ofStack").checked,active:$("ofActive").checked,
+    promo_text:$("ofPromo").value.trim(),show_in_strip:$("ofStrip").checked,starts_at:$("ofFrom").value||null,ends_at:$("ofTo").value||null,priority:Number($("ofPri").value||100),stackable:$("ofStack").checked,active:$("ofActive").checked,
     scope_categories:vals(".ofcat"),scope_products:vals(".ofprod").map(Number)};
 }
 function ofBodyClean(){
@@ -992,14 +996,26 @@ function ofSave(){
     if(r&&r.ok){OF.msg="✅ تم الحفظ";OF.edit=0;OF.draft=null;ofRender();ofLoad()}else{OF.msg="⚠️ "+((r&&r.message)||"تعذّر الحفظ");ofRender()}
   }).catch(function(){OF.msg="⚠️ تعذّر الاتصال";ofRender()});
 }
+function ofShowCat(i){
+  OF.curCat=i;
+  document.querySelectorAll(".ofpanel").forEach(function(p){p.style.display=(Number(p.dataset.i)===i)?"block":"none"});
+  document.querySelectorAll(".oftab").forEach(function(t){var on=Number(t.dataset.oftab)===i;t.style.background=on?"var(--g)":"";t.style.color=on?"#fff":""});
+  if($("ofSearch"))ofSearch($("ofSearch").value);
+}
+function ofBadges(){
+  var parts=[];
+  document.querySelectorAll(".ofpanel").forEach(function(p){
+    var i=p.dataset.i,cb=p.querySelector(".ofcat"),n=p.querySelectorAll(".ofprod:checked").length,name=cb.value;
+    var b=$("ofb"+i);if(b)b.textContent=cb.checked?"✓":(n?"("+n+")":"");
+    p.querySelector(".ofwhole").style.display=cb.checked?"block":"none";
+    p.querySelector(".oflist").style.display=cb.checked?"none":"block";
+    if(cb.checked)parts.push("قسم "+name+" كله");else if(n)parts.push(n+" منتج من "+name);
+  });
+  var el=$("ofSum");if(el)el.textContent=parts.length?"المختار: "+parts.join(" · "):"المختار: كل المنتجات (مفيش قسم أو منتج متعلّم)";
+}
 function ofSearch(q){
   q=(q||"").trim();
   document.querySelectorAll(".ofrow").forEach(function(r){r.style.display=(!q||r.dataset.n.indexOf(q)>=0)?"flex":"none"});
-  document.querySelectorAll("[id^=ofp]").forEach(function(c){
-    var whole=document.querySelector('.ofcat[value="'+c.dataset.cat.replace(/"/g,'\\"')+'"]');
-    var any=Array.prototype.some.call(c.querySelectorAll(".ofrow"),function(r){return r.style.display!=="none"});
-    c.style.display=(q?(any&&!(whole&&whole.checked)):(OF.open[c.dataset.cat]&&!(whole&&whole.checked)))?"block":"none";
-  });
 }
 document.addEventListener("input",function(e){if(e.target&&e.target.id==="ofSearch")ofSearch(e.target.value)});
 /* ---------- auth ---------- */
@@ -1264,8 +1280,8 @@ document.addEventListener("click",function(e){
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال")});return}
   if(t.id==="znSave"){zonesSave();return}
   if(t.id==="ofSave"){ofSave();return}
-  if(t.classList&&t.classList.contains("ofcat")){ofSearch($("ofSearch")?$("ofSearch").value:"");return}
-  if(t.dataset&&t.dataset.ofopen!==undefined){var cc=$("ofp"+t.dataset.ofopen);var k=cc.dataset.cat;OF.open[k]=!OF.open[k];OF.draft=ofBody();ofRender();return}
+  if(t.classList&&(t.classList.contains("ofcat")||t.classList.contains("ofprod"))){ofBadges();return}
+  if(t.dataset&&t.dataset.oftab!==undefined){ofShowCat(Number(t.dataset.oftab));return}
   if(t.id==="ofCancel"){OF.edit=0;OF.msg="";OF.draft=null;ofRender();return}
   if(t.id==="ofStackRef"){apiCall("PUT","/offers/settings",{stack_with_referral:t.checked}).then(function(r){toast(r&&r.ok?"تم":"تعذّر");ofLoad()});return}
   if(t.dataset.ofedit){OF.edit=Number(t.dataset.ofedit);OF.msg="";OF.draft=null;ofRender();window.scrollTo(0,0);return}

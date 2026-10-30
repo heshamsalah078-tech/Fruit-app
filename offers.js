@@ -32,7 +32,9 @@ function init({ pool, requireAuth, express }) {
       const v = r2(Number(it.quantity) * Number(p.price));
       lines.push({ pid: p.id, cat: p.category, orig: v, remaining: v });
     }
-    const offers = await activeOffers(db);
+    const offers = (opts && Array.isArray(opts.offers))
+      ? opts.offers.slice().sort((x, y) => (x.priority - y.priority) || (x.id - y.id))
+      : await activeOffers(db);
     const giftIds = [...new Set(offers.map((o) => o.gift_product_id).filter(Boolean))];
     const gInfo = {};
     if (giftIds.length) {
@@ -143,12 +145,63 @@ function init({ pool, requireAuth, express }) {
     } catch (e) { console.error('offers skips', e.message); res.status(500).json({ error: 'failed' }); }
   });
 
+  // The set of offers a customer saw when he opened the app, valid for 30 minutes. Returns null if none / expired / not his.
+  async function resolveSnapshot(db, customerId, snapId) {
+    if (!snapId || !Number.isInteger(Number(snapId))) return null;
+    const r = await db.query(
+      `SELECT offers FROM offer_snapshots WHERE id = $1 AND customer_id = $2 AND created_at > now() - interval '30 minutes'`, [Number(snapId), customerId]);
+    return r.rows.length && Array.isArray(r.rows[0].offers) ? r.rows[0].offers : null;
+  }
+
+  const money = (v) => { const n = Math.round(Number(v) * 100) / 100; return (Number.isInteger(n) ? String(n) : n.toFixed(2)) + ' ج'; };
+  function fmtDate(d) {
+    try { return new Date(d).toLocaleDateString('ar-EG', { timeZone: 'Africa/Cairo', day: 'numeric', month: 'long' }); } catch (e) { return ''; }
+  }
+
+  // Shown to the customer as soon as he opens the app (a strip of cards). Also freezes this set of offers for him for 30 minutes.
+  router.get('/offers/active', requireAuth('customer'), async (req, res) => {
+    try {
+      const live = await activeOffers(pool);
+      const snap = await pool.query(`INSERT INTO offer_snapshots (customer_id, offers) VALUES ($1, $2::jsonb) RETURNING id`, [req.user.id, JSON.stringify(live)]);
+      pool.query(`DELETE FROM offer_snapshots WHERE created_at < now() - interval '2 days'`).catch(() => {});
+      const ids = new Set();
+      live.forEach((o) => { (o.scope_products || []).forEach((i) => ids.add(i)); if (o.gift_product_id) ids.add(o.gift_product_id); });
+      const pn = {};
+      if (ids.size) (await pool.query('SELECT id, name, stock_qty, reserved_qty FROM products WHERE id = ANY($1)', [[...ids]])).rows.forEach((p) => { pn[p.id] = p; });
+      const cards = [];
+      for (const o of live) {
+        if (!o.show_in_strip) continue;                          // a "surprise" offer: it applies, but is not advertised
+        let giftTxt = null;
+        if (o.gift_product_id) {
+          const g = pn[o.gift_product_id];
+          if (!g || Number(g.stock_qty) - Number(g.reserved_qty) < Number(o.gift_qty || 1)) continue;   // never advertise a gift we cannot give
+          giftTxt = 'هدية: ' + g.name + (Number(o.gift_qty) !== 1 ? ' × ' + Number(o.gift_qty) : '');
+        }
+        const ben = [];
+        if (o.discount_type === 'percent') ben.push('خصم ' + Number(o.discount_value) + '%');
+        if (o.discount_type === 'amount') ben.push('خصم ' + money(o.discount_value));
+        if (o.free_delivery) ben.push('توصيل مجاني');
+        if (giftTxt) ben.push(giftTxt);
+        const cats = o.scope_categories || [], prods = o.scope_products || [];
+        const scope = (!cats.length && !prods.length) ? 'على كل المنتجات'
+          : 'على: ' + [...cats.map((c) => 'قسم ' + c), ...prods.map((i) => (pn[i] ? pn[i].name : null)).filter(Boolean)].join('، ');
+        const details = [scope];
+        if (Number(o.min_amount) > 0) details.push('لمشتريات ' + money(o.min_amount) + ' أو أكتر');
+        if (o.ends_at) details.push('لحد ' + fmtDate(o.ends_at));
+        details.push(o.stackable ? 'بيتجمع مع عروض تانية' : 'مش بيتجمع مع عروض تانية');
+        cards.push({ id: o.id, title: o.name, text: o.promo_text || ben.join(' + '), details });
+      }
+      res.json({ snap_id: snap.rows[0].id, valid_minutes: 30, offers: cards });
+    } catch (e) { console.error('offers active', e.message); res.status(500).json({ error: 'failed' }); }
+  });
+
   // ---- customer: what applies to my cart right now (display only; the order recomputes everything) ----
   router.post('/offers/preview', requireAuth('customer'), async (req, res) => {
     try {
       const items = Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [];
-      const ev = await evaluate(pool, items);
-      res.json({ ...ev, stack_with_referral: await stackWithReferral(pool) });
+      const pinned = await resolveSnapshot(pool, req.user.id, req.body.snap_id);
+      const ev = await evaluate(pool, items, pinned ? { offers: pinned } : undefined);
+      res.json({ ...ev, stack_with_referral: await stackWithReferral(pool), pinned: !!pinned });
     } catch (e) { console.error('offers preview', e.message); res.status(500).json({ error: 'failed' }); }
   });
 
@@ -157,7 +210,7 @@ function init({ pool, requireAuth, express }) {
   router.get('/offers', requireAuth('admin'), async (req, res) => {
     try {
       const r = await pool.query(
-        `SELECT id, name, active, min_amount, scope_categories, scope_products, discount_type, discount_value, free_delivery, gift_product_id, gift_qty, stackable, priority,
+        `SELECT id, name, active, min_amount, scope_categories, scope_products, discount_type, discount_value, free_delivery, gift_product_id, gift_qty, stackable, priority, promo_text, show_in_strip,
                 ${ts('starts_at')} AS starts_at, ${ts('ends_at')} AS ends_at,
                 CASE WHEN NOT active THEN 'off' WHEN starts_at > now() THEN 'scheduled' WHEN ends_at <= now() THEN 'ended' ELSE 'live' END AS status
            FROM offers ORDER BY active DESC, priority, id`);
@@ -218,7 +271,8 @@ function init({ pool, requireAuth, express }) {
     if (from && to && to <= from) return { error: 'تاريخ النهاية لازم يكون بعد البداية.' };
     const cats = Array.isArray(b.scope_categories) ? [...new Set(b.scope_categories.map((c) => String(c).slice(0, 80)))] : [];
     const prods = Array.isArray(b.scope_products) ? [...new Set(b.scope_products.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
-    return { v: { name, dtype, value, free, giftId, giftQty, result_type: dtype !== 'none' ? dtype : (free ? 'free_delivery' : 'gift'), min_amount: min, priority: pri, from, to, cats, prods, stackable: b.stackable !== false, active: b.active !== false } };
+    const promo = String(b.promo_text || '').trim().slice(0, 160) || null;
+    return { v: { promo, strip: b.show_in_strip !== false, name, dtype, value, free, giftId, giftQty, result_type: dtype !== 'none' ? dtype : (free ? 'free_delivery' : 'gift'), min_amount: min, priority: pri, from, to, cats, prods, stackable: b.stackable !== false, active: b.active !== false } };
   }
   const TZ = (n) => `CASE WHEN $${n}::text IS NULL THEN NULL ELSE ($${n}::text)::timestamp AT TIME ZONE 'Africa/Cairo' END`;
 
@@ -229,9 +283,9 @@ function init({ pool, requireAuth, express }) {
     try {
       if (v.giftId && !(await pool.query('SELECT 1 FROM products WHERE id = $1', [v.giftId])).rows.length) return res.status(400).json({ error: 'invalid', message: 'منتج الهدية مش موجود.' });
       const r = await pool.query(
-        `INSERT INTO offers (name, active, starts_at, ends_at, min_amount, scope_categories, scope_products, result_type, result_value, discount_type, discount_value, free_delivery, gift_product_id, gift_qty, stackable, priority, created_by)
-         VALUES ($1,$2,${TZ(3)},${TZ(4)},$5,$6,$7,$8,$9,$10,$9,$11,$12,$13,$14,$15,$16) RETURNING id`,
-        [v.name, v.active, v.from, v.to, v.min_amount, v.cats, v.prods, v.result_type, v.value, v.dtype, v.free, v.giftId, v.giftQty, v.stackable, v.priority, req.user.id]);
+        `INSERT INTO offers (name, active, starts_at, ends_at, min_amount, scope_categories, scope_products, result_type, result_value, discount_type, discount_value, free_delivery, gift_product_id, gift_qty, stackable, priority, created_by, promo_text, show_in_strip)
+         VALUES ($1,$2,${TZ(3)},${TZ(4)},$5,$6,$7,$8,$9,$10,$9,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+        [v.name, v.active, v.from, v.to, v.min_amount, v.cats, v.prods, v.result_type, v.value, v.dtype, v.free, v.giftId, v.giftQty, v.stackable, v.priority, req.user.id, v.promo, v.strip]);
       await pool.query(`INSERT INTO staff_audit (action, actor_id, details) VALUES ('offer_created', $1, $2)`, [req.user.id, JSON.stringify({ id: r.rows[0].id, name: v.name })]);
       res.json({ ok: true, id: r.rows[0].id });
     } catch (e) { console.error('offer create', e.message); res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' }); }
@@ -244,8 +298,8 @@ function init({ pool, requireAuth, express }) {
       if (v.giftId && !(await pool.query('SELECT 1 FROM products WHERE id = $1', [v.giftId])).rows.length) return res.status(400).json({ error: 'invalid', message: 'منتج الهدية مش موجود.' });
       const r = await pool.query(
         `UPDATE offers SET name=$1, active=$2, starts_at=${TZ(3)}, ends_at=${TZ(4)}, min_amount=$5, scope_categories=$6, scope_products=$7,
-                result_type=$8, result_value=$9, discount_type=$10, discount_value=$9, free_delivery=$11, gift_product_id=$12, gift_qty=$13, stackable=$14, priority=$15 WHERE id=$16 RETURNING id`,
-        [v.name, v.active, v.from, v.to, v.min_amount, v.cats, v.prods, v.result_type, v.value, v.dtype, v.free, v.giftId, v.giftQty, v.stackable, v.priority, Number(req.params.id)]);
+                result_type=$8, result_value=$9, discount_type=$10, discount_value=$9, free_delivery=$11, gift_product_id=$12, gift_qty=$13, stackable=$14, priority=$15, promo_text=$17, show_in_strip=$18 WHERE id=$16 RETURNING id`,
+        [v.name, v.active, v.from, v.to, v.min_amount, v.cats, v.prods, v.result_type, v.value, v.dtype, v.free, v.giftId, v.giftQty, v.stackable, v.priority, Number(req.params.id), v.promo, v.strip]);
       if (!r.rows.length) return res.status(404).json({ error: 'not_found', message: 'العرض مش موجود.' });
       await pool.query(`INSERT INTO staff_audit (action, actor_id, details) VALUES ('offer_updated', $1, $2)`, [req.user.id, JSON.stringify({ id: r.rows[0].id, name: v.name, active: v.active })]);
       res.json({ ok: true });
@@ -259,6 +313,6 @@ function init({ pool, requireAuth, express }) {
     } catch (e) { res.status(500).json({ error: 'failed', message: 'تعذّر الحذف.' }); }
   });
 
-  return { router, evaluate, cap, dropDiscounts, stackWithReferral, recordApplied, logSkips };
+  return { router, evaluate, cap, dropDiscounts, stackWithReferral, recordApplied, logSkips, resolveSnapshot };
 }
 module.exports = { init };

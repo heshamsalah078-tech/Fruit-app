@@ -123,6 +123,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 <header><h1>🥬 سوق الطازج</h1><p id="hi">خضار وفواكه طازجة لباب بيتك</p></header>
 
 <section id="shop" class="on">
+  <div id="offStrip"></div>
   <div id="chips"></div>
   <div class="grid" id="grid"></div>
 </section>
@@ -272,7 +273,7 @@ function syncCart(){
 }
 function dbSaveOrder(o,onOk,onFail){
   if(!me.id){if(onFail)onFail("سجّل بياناتك أولًا");return}
-  apiCall("POST","/orders",{customer_id:me.id,zone_id:me.zone_id||undefined,reward_discount:0,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
+  apiCall("POST","/orders",{customer_id:me.id,offers_snap:OFFSNAP.id,zone_id:me.zone_id||undefined,reward_discount:0,items:o.lines.map(function(l){return {product_id:l.id,quantity:l.q,unit_price:l.line/l.q}})}).then(function(r){
     if(r&&r.id){o.id=r.id;o.status=r.status;o.created_at=r.created_at;clearTimeout(_cartSyncT);apiCall("POST","/cart/sync",{items:{}}).catch(function(){});if(onOk)onOk(r)}
     else if(r&&r.error==="out_of_area"){me.zone_id=0;saveMe();loadZones();if(onFail)onFail(r.message||"آسفين، منطقتك خارج نطاق التوصيل حالياً.")}
     else if(r&&r.error==="zone_required"){if(onFail)onFail(r.message||"اختر منطقتك الأول.")}
@@ -356,9 +357,9 @@ function cartV(){
   var ids=P.filter(function(p){return cart[p.id]});
   if(!ids.length){$("cart").innerHTML='<div class="empty"><div style="font-size:56px">🧺</div>سلتك فارغة.<br>أضف منتجات من المتجر لتبدأ.</div>';return}
   var s=sub(),d=Math.min(estimateReferralDiscount(),s),tot=s+FEE-d;
-  syncFee();tot=s+FEE-d;
+  syncFee();var ov=offersView(s,d),free=ov.free,FE=free?0:FEE;tot=s+FE-d-ov.disc;
   $("cart").innerHTML=ids.map(function(p){return '<div class="li"><span class="e">'+p.e+'</span><div class="n"><b>'+p.n+'</b><div class="mute">'+money(p.p)+' / '+p.u+'</div></div><div class="qty"><button data-m="'+p.id+'" aria-label="إنقاص">−</button><b>'+num(cart[p.id])+'</b><button data-a="'+p.id+'" aria-label="زيادة">+</button></div></div>'}).join("")+
-  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل'+(zoneById(me.zone_id)?' ('+esc(zoneById(me.zone_id).name)+')':'')+'</span><span>'+(zoneById(me.zone_id)?money(FEE):'—')+'</span></div>'+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div>'+(zoneById(me.zone_id)?'':'<p style="color:var(--t);font-weight:700;margin:8px 0 4px">اختر منطقتك عشان نحسب التوصيل:</p>'+zoneSelect("ckZone2",0)+'<button class="chip" id="ckZoneSave" style="width:100%">حفظ المنطقة</button>')+'</div>':(otpState?otpCard():refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'">'+zoneSelect("ckZone",0)+'<button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>'))+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':(me.phone&&!zoneById(me.zone_id)?'<p class="mute" style="margin:10px 0 0">اختر منطقتك الأول عشان تقدر تأكّد الطلب.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>'))+'';
+  '<div class="tot"><div><span>المجموع</span><span>'+money(s)+'</span></div><div><span>التوصيل'+(zoneById(me.zone_id)?' ('+esc(zoneById(me.zone_id).name)+')':'')+'</span><span>'+(zoneById(me.zone_id)?(free?'<s class="mute">'+money(FEE)+'</s> <b style="color:var(--g)">مجاني 🎉</b>':money(FEE)):'—')+'</span></div>'+ov.applied.map(function(a){var pt=[];if(a.amount>0)pt.push('−'+money(a.amount));if(a.free_delivery)pt.push('توصيل مجاني');if(a.gift)pt.push('🎁 '+esc(a.gift.name)+' × '+num(a.gift.qty));return '<div style="color:var(--g)"><span>🎁 '+esc(a.name)+'</span><span>'+pt.join(' · ')+'</span></div>'}).join('')+(d?'<div style="color:var(--g)"><span>خصم الإحالة (تقريبي)</span><span>−'+money(d)+'</span></div>':'')+'<div style="font-weight:800;font-size:18px"><span>الإجمالي</span><span>'+money(tot)+'</span></div></div>'+(me.phone?'<div class="card" style="margin-top:8px"><b>التوصيل إلى:</b><div class="mute">'+me.name+' · '+me.phone+'<br>'+me.addr+'</div>'+(zoneById(me.zone_id)?'':'<p style="color:var(--t);font-weight:700;margin:8px 0 4px">اختر منطقتك عشان نحسب التوصيل:</p>'+zoneSelect("ckZone2",0)+'<button class="chip" id="ckZoneSave" style="width:100%">حفظ المنطقة</button>')+'</div>':(otpState?otpCard():refWelcomeCard()+'<div class="card" style="margin-top:8px"><h2 style="margin-top:0">بيانات التوصيل</h2><p class="mute" style="margin:0 0 8px">محتاجين بياناتك مرة واحدة بس لإتمام الطلب.</p><input id="ckName" placeholder="الاسم" style="'+INP+'"><input id="ckPhone" type="tel" placeholder="رقم الموبايل" style="'+INP+'"><input id="ckAddr" placeholder="العنوان بالتفصيل" style="'+INP+'">'+zoneSelect("ckZone",0)+'<button class="chip" id="ckReg" style="width:100%">حفظ بياناتي</button></div>'))+(active()?'<p class="mute" style="margin:10px 0 0">لديك طلب قيد التنفيذ. أكمله أو ألغِه قبل إرسال طلب جديد.</p><button class="big" disabled>تأكيد الطلب</button>':(me.phone&&!zoneById(me.zone_id)?'<p class="mute" style="margin:10px 0 0">اختر منطقتك الأول عشان تقدر تأكّد الطلب.</p><button class="big" disabled>تأكيد الطلب</button>':'<p class="mute" style="margin:10px 0 0">الدفع عند الاستلام عبر فودافون كاش.</p><button class="big" id="order">تأكيد الطلب</button>'))+'';
 }
 function active(){return orders.some(function(o){return o.status&&o.status!=="delivered"&&o.status!=="cancelled"})}
 function timesFor(o){
@@ -395,7 +396,7 @@ function ordV(){
 function roleCard(o,i,txt,btn,k){
   return '<div class="card"><h2>طلب رقم '+num(o.id)+'</h2><div class="mute">'+num(o.items)+' منتجات · '+money(o.total)+'</div><p>'+txt+'</p>'+(btn?'<button class="big" style="background:var(--g)" data-k="'+k+'" data-i="'+i+'">'+btn+'</button>':'')+'</div>'}
 function itemLines(o){
-  return (o.lines||[]).map(function(l){return '<div class="row" style="margin-top:4px"><span>'+l.e+' '+l.n+' × '+num(l.q)+' '+l.u+'</span><span>'+money(l.line)+'</span></div>'}).join("")}
+  return (o.lines||[]).map(function(l){return '<div class="row" style="margin-top:4px"><span>'+l.e+' '+l.n+' × '+num(l.q)+' '+l.u+'</span><span>'+(l.gift?'🎁 هدية':money(l.line))+'</span></div>'}).join("")}
 function staffHead(o,badge){
   return '<div class="sc"><div class="scTop"><b>طلب #'+num(o.id)+'</b><span class="badge">'+badge+'</span></div>'+
   '<div class="mute">العميل: '+o.cust+' · '+o.phone+'</div>'+itemLines(o)+
@@ -537,7 +538,9 @@ document.addEventListener("click",function(e){
     dbSaveCustomer(me);
     var s=sub(),dd=Math.min(estimateReferralDiscount(),s); // display estimate only — server computes the real, authoritative discount
     var lines=P.filter(function(p){return cart[p.id]}).map(function(p){return {id:p.id,n:p.n,e:p.e,q:cart[p.id],u:p.u,line:cart[p.id]*p.p}});
-    var ord={items:count(),lines:lines,total:s+FEE-dd,fee:FEE,pay:"due",cust:nm,phone:ph,addr:ad,reward_discount:0};
+    var ov2=offersView(s,dd);
+     ov2.applied.forEach(function(a){if(a.gift)lines.push({id:a.gift.product_id,n:a.gift.name,e:a.gift.emoji,q:a.gift.qty,u:a.gift.unit,line:0,gift:true})});
+     var ord={items:count(),lines:lines,total:s+(ov2.free?0:FEE)-ov2.disc-dd,fee:(ov2.free?0:FEE),pay:"due",cust:nm,phone:ph,addr:ad,reward_discount:0};
     dbSaveOrder(ord,function(resp){
       orders.unshift(ord);
       var realDiscount=Number(resp&&resp.reward_discount||0);
@@ -668,6 +671,44 @@ function referralRejectMsg(reason){
 /* ---------- delivery zones: the customer picks a zone, the SERVER computes the fee ---------- */
 function zoneById(id){id=Number(id);return ZONES.find(function(z){return z.id===id})||null}
 function syncFee(){var z=me&&me.zone_id?zoneById(me.zone_id):null;FEE=z?z.fee:0}
+/* offers strip: shown as soon as the app opens. The server also freezes this set of offers for me for 30 minutes (snap_id),
+   so what I saw is what my cart and my order use, even if the manager edits an offer meanwhile. */
+var OFFSNAP={id:null,at:0,cards:[]};
+function loadOffers(){
+  apiCall("GET","/offers/active").then(function(r){
+    if(!r||!r.offers)return;
+    OFFSNAP.id=r.snap_id;OFFSNAP.at=Date.now();OFFSNAP.cards=r.offers;
+    OFFPREV.sig="";OFFPREV.res=null;
+    renderStrip();
+  }).catch(function(){})
+}
+function renderStrip(){
+  var el=$("offStrip");if(!el)return;
+  if(!OFFSNAP.cards.length){el.innerHTML="";return}
+  el.innerHTML='<div style="display:flex;gap:10px;overflow-x:auto;padding:10px 12px 4px">'+OFFSNAP.cards.map(function(c,i){
+    return '<div onclick="toggleOff('+i+')" style="flex:0 0 auto;min-width:230px;max-width:290px;background:var(--g2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;cursor:pointer">'+
+      '<div style="font-weight:800;color:var(--ink)">🎁 '+esc(c.title)+'</div>'+
+      '<div style="color:var(--ink);margin-top:2px">'+esc(c.text)+'</div>'+
+      '<div id="offd'+i+'" style="display:none;margin-top:6px;font-size:12px;color:var(--mute)">'+c.details.map(esc).join('<br>')+'</div>'+
+      '<div style="font-size:11px;color:var(--mute);margin-top:4px">اضغط للتفاصيل</div></div>'}).join("")+'</div>'
+}
+function toggleOff(i){var d=$("offd"+i);if(d)d.style.display=d.style.display==="none"?"block":"none"}
+document.addEventListener("visibilitychange",function(){if(!document.hidden&&OFFSNAP.id&&Date.now()-OFFSNAP.at>30*60*1000)loadOffers()});
+/* offers: the server tells me which offers apply to this cart (display only; the order recomputes everything) */
+var OFFPREV={sig:"",res:null};
+function offersView(sum,refD){
+  var sig=P.filter(function(p){return cart[p.id]}).map(function(p){return p.id+":"+cart[p.id]}).join(",");
+  if(OFFPREV.sig!==sig){
+    OFFPREV.sig=sig;OFFPREV.res=null;
+    if(sig)apiCall("POST","/offers/preview",{snap_id:OFFSNAP.id,items:P.filter(function(p){return cart[p.id]}).map(function(p){return {product_id:p.id,quantity:cart[p.id]}})}).then(function(r){
+      if(OFFPREV.sig===sig&&r&&r.applied){OFFPREV.res=r;cartV()}
+    }).catch(function(){})
+  }
+  var r=OFFPREV.res;if(!r)return {applied:[],disc:0,free:false};
+  var ap=r.applied||[],disc=Number(r.discount||0);
+  if(r.stack_with_referral===false&&refD>=disc){ap=ap.map(function(a){return Object.assign({},a,{amount:0})}).filter(function(a){return a.free_delivery||a.gift});disc=0}
+  return {applied:ap,disc:Math.min(disc,Math.max(sum-refD,0)),free:!!r.free_delivery}
+}
 function loadZones(){
   apiCall("GET","/zones").then(function(r){
     ZONES=(r&&r.zones)?r.zones:[];ZONES_LOADED=true;
@@ -706,7 +747,7 @@ document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.id==="lo"){logout()}
 });
-startApp();loadZones();
+startApp();loadZones();loadOffers();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js").catch(function(){})}
 
 (function(){

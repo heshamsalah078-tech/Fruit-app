@@ -499,7 +499,8 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
     let rd = await referral.computeDiscount(client, customer_id, items);
     const itemsSum = items.reduce((a, it) => a + Number(it.quantity) * Number(it.unit_price), 0);
     // Offers (admin screen): evaluated here on the server with DB prices. Combining with the referral discount follows the admin's switch.
-    let ev = await offers.evaluate(client, items, { lock: true });
+    const pinnedOffers = await offers.resolveSnapshot(client, customer_id, req.body.offers_snap);   // the offers this customer saw (valid 30 min)
+    let ev = await offers.evaluate(client, items, { lock: true, offers: pinnedOffers || undefined });
     if (!(await offers.stackWithReferral(client))) {
       if (ev.discount >= rd.discount) rd = { discount: 0, lines: [] }; else ev = offers.dropDiscounts(ev);
     }
