@@ -95,7 +95,7 @@ function init({ pool, requireAuth, express }) {
            JOIN orders o ON o.id = x.order_id
            JOIN customers c ON c.id = o.customer_id
            LEFT JOIN staff sb ON sb.id = x.cancelled_by_id AND x.cancelled_by_role <> 'customer'
-           LEFT JOIN staff cr ON cr.id = x.courier_id
+           LEFT JOIN couriers cr ON cr.id = x.courier_id
            LEFT JOIN staff pr ON pr.id = x.prep_staff_id
           WHERE x.cancelled_at > now() - make_interval(days => $1)
           ORDER BY x.cancelled_at DESC LIMIT 300`, [days]);
@@ -123,7 +123,7 @@ function init({ pool, requireAuth, express }) {
       }
       for (const t of trip.rows) { ids.add(t.actor_id); if (t.courier_id) ids.add(t.courier_id); if (t.prev_courier_id) ids.add(t.prev_courier_id); }
       const names = {};
-      if (ids.size) (await pool.query('SELECT id, name FROM staff WHERE id = ANY($1::int[])', [[...ids].filter(Number.isInteger)])).rows.forEach((s) => { names[s.id] = s.name; });
+      if (ids.size) (await pool.query('SELECT id, name FROM staff WHERE id = ANY($1::int[]) UNION ALL SELECT id, name FROM couriers WHERE id = ANY($1::int[])', [[...ids].filter(Number.isInteger)])).rows.forEach((s) => { names[s.id] = s.name; });
       const nm = (id) => (id ? (names[id] || '#' + id) : 'بدون');
       const rows = [];
       for (const p of prep.rows) {

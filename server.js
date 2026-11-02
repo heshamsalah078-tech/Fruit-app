@@ -316,7 +316,9 @@ app.post('/auth/customer-identify', async (req, res) => {
 
 app.post('/auth/staff-login', async (req, res) => {
   const { phone, password } = req.body;
-  const r = await pool.query('SELECT * FROM staff WHERE phone=$1 AND active=true', [phone]);
+  // Employees live in `staff`, delivery couriers in their own `couriers` table (phone numbers are unique across both).
+  let r = await pool.query('SELECT * FROM staff WHERE phone=$1 AND active=true', [phone]);
+  if (!r.rows.length) r = await pool.query(`SELECT *, 'delivery'::text AS role FROM couriers WHERE phone=$1 AND active=true`, [phone]);
   if (!r.rows.length) {
     return res.status(401).json({ error: 'invalid_credentials', message: 'بيانات الدخول غير صحيحة.' });
   }
@@ -664,7 +666,7 @@ app.get('/orders', requireAuth('admin'), async (req, res) => {
      FROM orders o
      JOIN customers c ON c.id = o.customer_id
      LEFT JOIN staff ps ON ps.id = o.prep_staff_id
-     LEFT JOIN staff ds ON ds.id = o.delivery_staff_id
+     LEFT JOIN couriers ds ON ds.id = o.delivery_staff_id
      ORDER BY o.created_at DESC`
   );
   res.json(await withItems(r.rows));

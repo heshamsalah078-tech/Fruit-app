@@ -79,7 +79,9 @@ function init({ pool, requireAuth, express }) {
       const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
       const r = await pool.query(
         `SELECT o.id, o.status, o.created_at, o.prep_assignment_mode,
-                o.assigned_delivery_id, o.assigned_prep_id,
+                o.assigned_delivery_id, o.assigned_prep_id, o.rescue_courier_id, o.rescue_assigned_at, tr.breakdown_from_courier,
+                rc.name AS rescue_name, bc.name AS broken_name,
+                EXTRACT(EPOCH FROM (COALESCE(o.delivered_at, now()) - o.rescue_assigned_at)) - EXTRACT(EPOCH FROM (o.delivery_due_at - o.delivery_started_at)) AS rescue_over_s,
                 c.name AS customer_name,
                 ps.name AS prep_name, ad.name AS assigned_courier_name, dd.name AS delivery_name,
                 EXTRACT(EPOCH FROM (o.prep_due_at - o.prep_assigned_at)) AS prep_expected_s,
@@ -91,16 +93,19 @@ function init({ pool, requireAuth, express }) {
                 EXTRACT(EPOCH FROM (COALESCE(o.delivered_at, now()) - o.delivery_due_at)) AS delivery_over_s,
                 EXTRACT(EPOCH FROM (COALESCE(o.prep_assigned_at, now()) - o.created_at)) AS queue_wait_s,
                 EXTRACT(EPOCH FROM (COALESCE(o.delivered_at, now()) - o.created_at)) AS total_actual_s,
-                tr.courier_arrived_at, tr.assignment_mode AS delivery_assignment_mode,
+                tr.courier_arrived_at, tr.assignment_mode AS delivery_assignment_mode, tr.started_by,
+                EXTRACT(EPOCH FROM (COALESCE(o.delivery_started_at, now()) - tr.courier_arrived_at)) AS handover_wait_s,
                 EXISTS (SELECT 1 FROM trip_assign_log l WHERE l.trip_id = o.trip_id AND l.mode = 'manual' AND l.action IN ('assigned','merged','split')) AS trip_manual_touch,
                 (o.prep_assigned_at IS NULL) AS in_queue, o.prep_due_at, o.pickup_due_at, o.delivery_due_at,
                 (SELECT COUNT(*) FROM staff WHERE role='prep' AND active AND password_hash IS NOT NULL) AS active_prep
            FROM orders o
            JOIN customers c ON c.id = o.customer_id
            LEFT JOIN staff ps ON ps.id = o.prep_staff_id
-           LEFT JOIN staff ad ON ad.id = o.assigned_delivery_id
-           LEFT JOIN staff dd ON dd.id = o.delivery_staff_id
+           LEFT JOIN couriers ad ON ad.id = o.assigned_delivery_id
+           LEFT JOIN couriers dd ON dd.id = o.delivery_staff_id
            LEFT JOIN trips tr ON tr.id = o.trip_id
+           LEFT JOIN couriers rc ON rc.id = o.rescue_courier_id
+           LEFT JOIN couriers bc ON bc.id = tr.breakdown_from_courier
           WHERE o.status <> 'cancelled'
             AND (${done ? `o.status = 'delivered' AND o.delivered_at > now() - make_interval(days => $1)`
                         : `o.status NOT IN ('delivered')`})
@@ -119,7 +124,13 @@ function init({ pool, requireAuth, express }) {
                         party_name: byOps ? 'مدير التشغيل' : (o.assigned_courier_name || 'المندوب') });
         }
         const delOver = mins(o.delivery_over_s);
-        if (o.delivery_due_at && delOver > 0)
+        if (o.rescue_courier_id && o.rescue_assigned_at) {
+          // Breakdown (section 23): the broken-down courier is NOT blamed. The rescue courier is held to the FULL order
+          // duration counted from the moment he was dispatched (including his travel to the breakdown location).
+          const rescueOver = mins(o.rescue_over_s);
+          if (o.delivery_due_at && rescueOver > 0)
+            delays.push({ stage: 'delivery', minutes: rescueOver, party_role: 'delivery', party_name: (o.rescue_name || 'المندوب البديل') + ' (بديل بعد عطل ' + (o.broken_name || 'مندوب') + ')' });
+        } else if (o.delivery_due_at && delOver > 0)
           delays.push({ stage: 'delivery', minutes: delOver, party_role: 'delivery', party_name: o.delivery_name || 'المندوب' });
         if (o.in_queue && Number(o.active_prep) === 0)
           delays.push({ stage: 'queue', minutes: mins(o.queue_wait_s), party_role: 'ops', party_name: 'مدير التشغيل (لا يوجد موظف تجهيز فعّال)' });
@@ -127,6 +138,8 @@ function init({ pool, requireAuth, express }) {
           id: o.id, status: o.status, customer_name: o.customer_name, created_at: o.created_at,
           assignment_mode: o.prep_assignment_mode,
           delivery_assignment_mode: o.delivery_assignment_mode || null,
+          // time between the courier reaching the store and the order being handed to him (never counted against the courier)
+          handover_wait_min: o.courier_arrived_at && o.handover_wait_s !== null ? mins(o.handover_wait_s) : null,
           // section 18: the ops manager is accountable for ANY delay (he can always override); this flags whether he actually intervened
           ops_intervened: o.prep_assignment_mode === 'manual' || o.delivery_assignment_mode === 'manual' || o.trip_manual_touch === true,
           queue_wait_min: mins(o.queue_wait_s),
