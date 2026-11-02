@@ -63,18 +63,19 @@ function init({ pool, requireAuth, express, withItems }) {
   }
 
   // Wipes any password and issues a fresh one-time code. The account stays locked until it is used.
-  async function issueActivation(db, staffId, phone, actorId, action, password) {
+  async function issueActivation(db, staffId, phone, actorId, action, password, table) {
+    const T = table === 'couriers' ? 'couriers' : 'staff';   // employees or delivery couriers
     if (!(await activationRequired(db))) { // activation paused: set the password directly
       if (badPassword(password)) { const e = new Error('password_required'); e.code = 'password_required'; throw e; }
       const ph = await bcrypt.hash(password, 10);
-      await db.query(`UPDATE staff SET password_hash=$1, activation_code_hash=NULL, activation_expires_at=NULL, activation_attempts=0 WHERE id=$2`, [ph, staffId]);
+      await db.query(`UPDATE ${T} SET password_hash=$1, activation_code_hash=NULL, activation_expires_at=NULL, activation_attempts=0 WHERE id=$2`, [ph, staffId]);
       await audit(db, action + '_direct', actorId, staffId, null);
       return { sent: false, direct: true };
     }
     const code = genCode();
     const hash = await bcrypt.hash(code, 10);
     await db.query(
-      `UPDATE staff SET password_hash=NULL, activation_code_hash=$1,
+      `UPDATE ${T} SET password_hash=NULL, activation_code_hash=$1,
               activation_expires_at = now() + ($2 || ' hours')::interval, activation_attempts=0
         WHERE id=$3`, [hash, String(CODE_TTL_HOURS), staffId]);
     await audit(db, action, actorId, staffId, null);
@@ -89,19 +90,25 @@ function init({ pool, requireAuth, express, withItems }) {
     const fail = () => res.status(400).json({ error: 'invalid_code', message: 'كود التفعيل غير صحيح أو انتهت صلاحيته. اطلب من الإدارة كود جديد.' });
     if (password.length < 6) return res.status(400).json({ error: 'short_password', message: 'كلمة السر لازم تكون 6 أحرف على الأقل.' });
     try {
-      const r = await pool.query(
+      let tbl = 'staff';
+      let r = await pool.query(
         'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM staff WHERE phone=$1', [phone]);
+      if (!r.rows.length) {
+        tbl = 'couriers';
+        r = await pool.query(
+          'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM couriers WHERE phone=$1', [phone]);
+      }
       const s = r.rows[0];
       if (!s || !s.active || !s.activation_code_hash) { await bcrypt.compare(code, DUMMY_HASH); return fail(); }
       if (new Date(s.activation_expires_at) < new Date() || s.activation_attempts >= MAX_ATTEMPTS) return fail();
       const ok = await bcrypt.compare(code, s.activation_code_hash);
       if (!ok) {
-        await pool.query('UPDATE staff SET activation_attempts = activation_attempts + 1 WHERE id=$1', [s.id]);
+        await pool.query(`UPDATE ${tbl} SET activation_attempts = activation_attempts + 1 WHERE id=$1`, [s.id]);
         return fail();
       }
       const hash = await bcrypt.hash(password, 10);
       const u = await pool.query(
-        `UPDATE staff SET password_hash=$1, activation_code_hash=NULL, activation_expires_at=NULL, activation_attempts=0
+        `UPDATE ${tbl} SET password_hash=$1, activation_code_hash=NULL, activation_expires_at=NULL, activation_attempts=0
           WHERE id=$2 AND activation_code_hash IS NOT NULL RETURNING id`, [hash, s.id]);
       if (!u.rows.length) return fail();
       await audit(pool, 'activated', s.id, s.id, null);
@@ -118,6 +125,7 @@ function init({ pool, requireAuth, express, withItems }) {
     if (!ROLES.includes(role) || !name || !String(name).trim() || !phone || !String(phone).trim()) {
       return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
     }
+    if (role === 'delivery') return res.status(400).json({ error: 'use_couriers', message: 'الدليفري بيتضاف من شاشة الدليفرية مش من الموظفين.' });
     if (settlement_mode && !['per_order', 'daily', 'weekly', 'suspended'].includes(settlement_mode)) {
       return res.status(400).json({ error: 'invalid_settlement_mode' });
     }
@@ -125,7 +133,7 @@ function init({ pool, requireAuth, express, withItems }) {
       if (!(await activationRequired()) && badPassword(password)) {
         return res.status(400).json({ error: 'password_required', message: 'اكتب كلمة سر للموظف (6 أحرف على الأقل).' });
       }
-      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1', [String(phone).trim()]);
+      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1 UNION ALL SELECT id FROM couriers WHERE phone=$1', [String(phone).trim()]);
       if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
       let col = null;
       if (role === 'delivery') {
@@ -193,23 +201,29 @@ function init({ pool, requireAuth, express, withItems }) {
     const r = await pool.query(
       `SELECT id, name, phone, phone2, address, role, job_title, active, settlement_mode,
               (password_hash IS NOT NULL) AS activated
-         FROM staff ORDER BY id`);
+         FROM staff WHERE role <> 'delivery' ORDER BY id`);   // couriers are managed from their own screen
     res.json(r.rows);
   });
 
   // Staff the ops manager may assign orders to: right role, active, activated, not suspended.
   router.get('/staff/assignable', requireAuth('admin', 'ops'), async (req, res) => {
-    const r = await pool.query(
+    const p = await pool.query(
       `SELECT id, name, role, job_title FROM staff
-        WHERE role IN ('prep','delivery') AND active=true AND password_hash IS NOT NULL
+        WHERE role = 'prep' AND active=true AND password_hash IS NOT NULL
           AND settlement_mode IS DISTINCT FROM 'suspended'
-        ORDER BY role, name`);
-    res.json({ prep: r.rows.filter((x) => x.role === 'prep'), delivery: r.rows.filter((x) => x.role === 'delivery') });
+        ORDER BY name`);
+    const d = await pool.query(
+      `SELECT id, name, 'delivery'::text AS role, NULL::text AS job_title FROM couriers
+        WHERE active=true AND password_hash IS NOT NULL AND settlement_mode IS DISTINCT FROM 'suspended'
+        ORDER BY name`);
+    res.json({ prep: p.rows, delivery: d.rows });
   });
 
   // ---------- the employee himself ----------
   router.get('/staff/me', requireAuth(...ALL_STAFF), async (req, res) => {
-    const r = await pool.query('SELECT id, name, phone, phone2, address, job_title, role FROM staff WHERE id=$1', [req.user.id]);
+    const r = req.user.role === 'delivery'
+      ? await pool.query(`SELECT id, name, phone, phone2, address, NULL::text AS job_title, 'delivery'::text AS role FROM couriers WHERE id=$1`, [req.user.id])
+      : await pool.query('SELECT id, name, phone, phone2, address, job_title, role FROM staff WHERE id=$1', [req.user.id]);
     res.json(r.rows[0] || {});
   });
 
@@ -217,12 +231,13 @@ function init({ pool, requireAuth, express, withItems }) {
     const oldPw = String(req.body.old_password || ''), newPw = String(req.body.new_password || '');
     if (newPw.length < 6) return res.status(400).json({ error: 'short_password', message: 'كلمة السر الجديدة لازم تكون 6 أحرف على الأقل.' });
     try {
-      const r = await pool.query('SELECT password_hash FROM staff WHERE id=$1', [req.user.id]);
+      const MT = req.user.role === 'delivery' ? 'couriers' : 'staff';
+    const r = await pool.query(`SELECT password_hash FROM ${MT} WHERE id=$1`, [req.user.id]);
       const h = r.rows[0] && r.rows[0].password_hash;
       if (!h || !(await bcrypt.compare(oldPw, h))) {
         return res.status(400).json({ error: 'wrong_password', message: 'كلمة السر الحالية غير صحيحة.' });
       }
-      await pool.query('UPDATE staff SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(newPw, 10), req.user.id]);
+      await pool.query(`UPDATE ${MT} SET password_hash=$1 WHERE id=$2`, [await bcrypt.hash(newPw, 10), req.user.id]);
       await audit(pool, 'password_changed', req.user.id, req.user.id, null);
       res.json({ ok: true });
     } catch (e) {
@@ -264,7 +279,7 @@ function init({ pool, requireAuth, express, withItems }) {
            FROM orders o
            JOIN customers c ON c.id = o.customer_id
            LEFT JOIN staff ps ON ps.id = o.assigned_prep_id
-           LEFT JOIN staff ds ON ds.id = o.assigned_delivery_id
+           LEFT JOIN couriers ds ON ds.id = o.assigned_delivery_id
           WHERE o.status IN ('awaiting_prep','preparing','awaiting_delivery','on_the_way')
           ORDER BY o.created_at`);
       res.json(await withItems(r.rows));
@@ -284,9 +299,11 @@ function init({ pool, requireAuth, express, withItems }) {
     try {
       async function check(id, role) {
         if (id === null || id === undefined || id === '') return null;
-        const r = await pool.query(
-          `SELECT id FROM staff WHERE id=$1 AND role=$2 AND active=true AND password_hash IS NOT NULL
-              AND settlement_mode IS DISTINCT FROM 'suspended'`, [Number(id), role]);
+        const r = role === 'delivery'
+          ? await pool.query(`SELECT id FROM couriers WHERE id=$1 AND active=true AND password_hash IS NOT NULL AND settlement_mode IS DISTINCT FROM 'suspended'`, [Number(id)])
+          : await pool.query(
+            `SELECT id FROM staff WHERE id=$1 AND role=$2 AND active=true AND password_hash IS NOT NULL
+                AND settlement_mode IS DISTINCT FROM 'suspended'`, [Number(id), role]);
         if (!r.rows.length) throw Object.assign(new Error('bad_target'), { code: 'bad_target' });
         return r.rows[0].id;
       }
