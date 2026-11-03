@@ -191,7 +191,7 @@ function go(t){
 
 /* ---------- team (admin) ---------- */
 var TM=[],editId=0,SMS_ON=false,ACT_REQ=false;
-var TMF={filter:"all",showAdd:false};
+var TMF={idx:0,showAdd:false,focusId:0};
 function teamLoad(){
   Promise.all([
     apiCall("GET","/staff-list").then(function(r){TM=Array.isArray(r)?r:[]}),
@@ -201,48 +201,54 @@ function teamLoad(){
 }
 function teamV(){
   var el=$("team");if(!el)return;
-  var e=TM.find(function(m){return m.id===editId});
-  var cnt={all:TM.length};TM.forEach(function(m){cnt[m.role]=(cnt[m.role]||0)+1});
-  var chips=[["all","الكل"],["admin","إدارة"],["ops","مدير تشغيل"],["finance","مدير مالي"],["prep","تجهيز"]].map(function(f){
-    return '<button type="button" class="chip tmchip" data-tmf="'+f[0]+'" style="flex:0 0 auto">'+f[1]+' ('+(cnt[f[0]]||0)+')</button>'}).join("");
-  var showForm=!!(e||TMF.showAdd);
-  el.innerHTML='<h1 style="font-size:19px">👥 الموظفون</h1>'+
-    '<p class="mute" style="margin:0 0 10px">الدليفرية مش هنا، ليهم تاب لوحدهم: 🛵 الدليفرية.</p>'+
-    '<div style="display:flex;gap:8px;overflow-x:auto;padding:2px 0 8px">'+chips+'</div>'+
-    '<input id="tmQ" placeholder="🔎 دوّر بالاسم أو الموبايل أو المسمى الوظيفي" style="width:100%;box-sizing:border-box;margin-bottom:8px">'+
-    '<div id="tmList">'+(TM.length?TM.map(function(m){
-      return '<div class="card tmrow" data-role="'+m.role+'" data-s="'+esc((m.name+" "+m.phone+" "+(m.phone2||"")+" "+(m.job_title||"")).toLowerCase())+'"><b>'+esc(m.name)+'</b> — '+esc(m.job_title||"بدون مسمى")+'<br><span class="mute">'+RN[m.role]+' · '+esc(m.phone)+(m.phone2?' · '+esc(m.phone2):'')+(m.active?' · 🟢 شغّال':' · ⏸ موقوف')+(m.activated?'':' · ⏳ لم يُفعَّل بعد')+'</span>'+
-        (m.address?'<br><span class="mute">📍 '+esc(m.address)+'</span>':'')+
-        '<br><button class="chip" data-te="'+m.id+'" style="margin-top:8px">تعديل</button> <button class="chip" data-tg="'+m.id+'">'+(m.active?'إيقاف':'تفعيل')+'</button>'+
-        (m.id!==MYID?' <button class="chip" data-trs="'+m.id+'" style="color:var(--t)">🔑 إعادة تعيين كلمة السر</button>':'')+'</div>'}).join(''):'<p class="mute">لا يوجد موظفون بعد.</p>')+
-    '<p id="tmNone" class="mute" style="display:none">مفيش نتائج بالبحث ده.</p></div>'+
-    (showForm?'':'<button class="big" id="tmShowAdd" style="margin:10px 0">➕ إضافة موظف جديد</button>')+
-    '<div class="card" id="tmForm" style="display:'+(showForm?'block':'none')+'"><h2>'+(e?'تعديل موظف':'إضافة موظف جديد')+'</h2>'+
-    '<input id="tN" placeholder="الاسم" value="'+esc(e&&e.name)+'"'+(e?' disabled':'')+'>'+
-    '<input id="tT" placeholder="المسمى الوظيفي (اختياري)" value="'+esc(e&&e.job_title)+'">'+
-    '<input id="tP" placeholder="رقم الموبايل" inputmode="tel" value="'+esc(e&&e.phone)+'"'+(e?' disabled':'')+'>'+
-    '<input id="tP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel" value="'+esc(e&&e.phone2)+'">'+
-    '<input id="tA" placeholder="العنوان" value="'+esc(e&&e.address)+'">'+
-    '<select id="tR"><option value="prep">تجهيز</option><option value="ops">مدير تشغيل</option><option value="finance">مدير مالي</option><option value="admin">إدارة</option></select>'+
-    (e?'':(ACT_REQ?'':'<input id="tPw" type="text" placeholder="كلمة السر (6 أحرف على الأقل)" autocomplete="off">'))+
-    '<p class="mute" style="font-size:12px">'+(ACT_REQ?'🔒 مفيش كلمة سر هنا: الموظف بيحدّدها بنفسه بكود تفعيل بيوصله. ':'')+'الاسم ما بيتعدّلش بعد الإضافة.</p>'+
-    '<button class="big" id="tAdd">'+(e?'حفظ التعديل':'إضافة')+'</button> <button class="chip" id="tCan" style="margin-top:8px">إلغاء</button>'+
-    '<p id="tErr" style="color:var(--t)"></p></div>'+
+  var isNew=!!TMF.showAdd&&!editId;
+  if(TMF.focusId){var fi=TM.findIndex(function(m){return m.id===TMF.focusId});if(fi>=0)TMF.idx=fi;TMF.focusId=0}
+  if(TMF.idx>=TM.length)TMF.idx=TM.length-1;
+  if(TMF.idx<0)TMF.idx=0;
+  var cur=TM[TMF.idx]||null;
+  var mode=isNew?"new":(editId?"edit":"view");
+  var rec=isNew?null:(editId?(TM.find(function(m){return m.id===editId})||cur):cur);
+  var ro=(mode==="view");
+  function fld(id,label,val,dis){return '<label class="mute" style="display:block;margin:10px 0 3px">'+label+'</label><input id="'+id+'" autocomplete="off" value="'+esc(val||"")+'"'+(dis?' disabled':'')+'>'}
+  var h='<h1 style="font-size:19px">👥 الموظفون</h1>'+
+    '<p class="mute" style="margin:0 0 10px">الدليفرية مش هنا، ليهم تاب لوحدهم: 🛵 الدليفرية.</p>';
+  if(mode==="view"&&TM.length){
+    h+='<div class="card" style="display:flex;gap:8px;align-items:center">'+
+      '<button type="button" class="chip" data-tnav="prev"'+(TMF.idx<=0?' disabled':'')+'>▶ السابق</button>'+
+      '<select id="tmSel" style="flex:1;min-width:0">'+TM.map(function(m,i){return '<option value="'+i+'"'+(i===TMF.idx?' selected':'')+'>'+esc(m.name+(m.job_title?" — "+m.job_title:""))+'</option>'}).join("")+'</select>'+
+      '<button type="button" class="chip" data-tnav="next"'+(TMF.idx>=TM.length-1?' disabled':'')+'>التالي ◀</button></div>'+
+      '<p class="mute" style="margin:4px 0 8px;text-align:center">موظف '+(TMF.idx+1)+' من '+TM.length+'</p>';
+  }
+  h+='<div class="card" id="tmForm"><h2>'+(mode==="new"?'➕ سجل موظف جديد':(mode==="edit"?'✏️ تعديل بيانات موظف':(rec?esc(rec.name):'لا يوجد موظفون بعد')))+'</h2>';
+  if(mode==="new"||rec){
+    h+=fld("tN","الاسم",rec&&rec.name,mode!=="new")+
+      fld("tT","المسمى الوظيفي (اختياري)",rec&&rec.job_title,ro)+
+      fld("tP","رقم الموبايل",rec&&rec.phone,mode!=="new")+
+      fld("tP2","رقم موبايل بديل (اختياري)",rec&&rec.phone2,ro)+
+      fld("tA","العنوان",rec&&rec.address,ro)+
+      '<label class="mute" style="display:block;margin:10px 0 3px">الدور</label>'+
+      '<select id="tR"'+(ro?' disabled':'')+'><option value="prep">تجهيز</option><option value="ops">مدير تشغيل</option><option value="finance">مدير مالي</option><option value="admin">إدارة</option></select>';
+    if(mode==="new"&&!ACT_REQ)h+='<label class="mute" style="display:block;margin:10px 0 3px">كلمة السر (6 أحرف على الأقل)</label><input id="tPw" type="text" autocomplete="off">';
+    if(mode==="view")h+='<p class="mute" style="margin:10px 0 0">'+(rec.active?'🟢 شغّال':'⏸ موقوف')+(rec.activated?'':' · ⏳ لم يُفعَّل بعد')+'</p>';
+    if(mode!=="view")h+='<p class="mute" style="font-size:12px">'+(mode==="new"&&ACT_REQ?'🔒 كلمة السر بيحدّدها الموظف بنفسه بكود تفعيل بيوصله. ':'')+'الاسم والموبايل ما بيتعدّلوش بعد الإضافة.</p>';
+  }else{
+    h+='<p class="mute">اضغط "➕ سجل جديد" عشان تضيف أول موظف.</p>';
+  }
+  h+='<p id="tErr" style="color:var(--t)"></p>';
+  if(mode==="view"){
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'+
+      (rec?'<button class="chip" data-te="'+rec.id+'">✏️ تعديل</button><button class="chip" data-tg="'+rec.id+'">'+(rec.active?'إيقاف':'تفعيل')+'</button>'+(rec.id!==MYID?'<button class="chip" data-trs="'+rec.id+'" style="color:var(--t)">🔑 إعادة تعيين كلمة السر</button>':''):'')+
+      '<button class="big" id="tmShowAdd">➕ سجل جديد</button></div>';
+  }else{
+    h+='<div style="display:flex;gap:8px;margin-top:6px"><button class="big" id="tAdd" style="flex:1">حفظ</button><button class="chip" id="tCan">إلغاء</button></div>';
+  }
+  h+='</div>'+
     '<details style="margin-top:14px"><summary class="mute" style="cursor:pointer">⚙️ إعدادات تفعيل الموظفين</summary>'+
     '<div class="card"><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="actTog" style="width:18px;height:18px"'+(ACT_REQ?' checked':'')+'> تفعيل الموظف بكود تفعيل</label>'+
     '<p class="mute" style="font-size:12px;margin:6px 0 0">'+(ACT_REQ?'مفعّل: الموظف بيحدّد كلمة سره بنفسه بكود بيوصله.':'موقوف مؤقتاً (لحد ما نفعّل الرسائل): انت بتكتب كلمة السر للموظف مباشرة عند الإضافة أو إعادة التعيين.')+'</p>'+
     (ACT_REQ?'<label style="display:flex;align-items:center;gap:8px;font-weight:600;margin-top:10px"><input type="checkbox" id="smsTog" style="width:18px;height:18px"'+(SMS_ON?' checked':'')+'> إرسال أكواد التفعيل بـ SMS</label><p class="mute" style="font-size:12px;margin:6px 0 0">'+(SMS_ON?'مفعّل: الكود بيتبعت لموبايل الموظف نفسه.':'مقفول (فترة الاختبار): الكود بيتسجّل في لوج السيرفر فقط ولا يظهر على أي شاشة.')+'</p>':'')+'</div></details>';
-  if(e)$("tR").value=e.role;
-  tmApply();
-}
-function tmApply(){
-  var q=($("tmQ")?$("tmQ").value:"").trim().toLowerCase(),n=0;
-  document.querySelectorAll(".tmrow").forEach(function(r){
-    var ok=(TMF.filter==="all"||r.dataset.role===TMF.filter)&&(!q||r.dataset.s.indexOf(q)>=0);
-    r.style.display=ok?"":"none";if(ok)n++;
-  });
-  if($("tmNone"))$("tmNone").style.display=(TM.length&&!n)?"block":"none";
-  document.querySelectorAll(".tmchip").forEach(function(c){var on=c.dataset.tmf===TMF.filter;c.style.background=on?"var(--g)":"";c.style.color=on?"#fff":""});
+  el.innerHTML=h;
+  if($("tR")&&rec)$("tR").value=rec.role;
 }
 
 /* ---------- ops manager: assign orders to prep / delivery staff ---------- */
@@ -504,7 +510,8 @@ function crApply(){
   if($("crNone"))$("crNone").style.display=(CR&&CR.couriers.length&&!n)?"block":"none";
   document.querySelectorAll(".crchip").forEach(function(c){var on=c.dataset.crf===CRF.filter;c.style.background=on?"var(--g)":"";c.style.color=on?"#fff":""});
 }
-document.addEventListener("input",function(e){if(e.target&&e.target.id==="tmQ")tmApply();if(e.target&&e.target.id==="crQ")crApply()});
+document.addEventListener("input",function(e){if(e.target&&e.target.id==="crQ")crApply()});
+document.addEventListener("change",function(e){if(e.target&&e.target.id==="tmSel"){TMF.idx=Number(e.target.value);editId=0;TMF.showAdd=false;teamV()}});
 
 /* ---------- categories (admin only) ---------- */
 var CATL=[],editCid=0;
@@ -1261,7 +1268,7 @@ document.addEventListener("click",function(e){
   if(t.dataset.tg){apiCall("PATCH","/staff/"+t.dataset.tg+"/active").then(teamLoad);return}
   if(t.dataset.te){editId=Number(t.dataset.te);teamV();$("tmForm").scrollIntoView();return}
   if(t.id==="tCan"){editId=0;TMF.showAdd=false;teamV();return}
-  if(t.dataset.tmf){TMF.filter=t.dataset.tmf;tmApply();return}
+  if(t.dataset.tnav){TMF.idx+=t.dataset.tnav==="next"?1:-1;editId=0;TMF.showAdd=false;teamV();return}
   if(t.id==="tmShowAdd"){TMF.showAdd=true;teamV();$("tmForm").scrollIntoView();return}
   if(t.dataset.trs){
     var rpw=null;
@@ -1276,10 +1283,10 @@ document.addEventListener("click",function(e){
     var body={name:$("tN").value.trim(),job_title:$("tT").value.trim(),phone:$("tP").value.trim(),phone2:$("tP2").value.trim(),address:$("tA").value.trim(),role:$("tR").value};
     if(!editId&&!ACT_REQ){body.password=$("tPw")?$("tPw").value:"";if(body.password.length<6){$("tErr").textContent="اكتب كلمة سر 6 أحرف على الأقل";return}}
     if(!body.name||!body.phone){$("tErr").textContent="أكمل الاسم ورقم الموبايل";return}
-    var wasEdit=!!editId;
+    var wasEdit=!!editId,keepId=editId;
     var req=editId?apiCall("PATCH","/staff/"+editId,body):apiCall("POST","/auth/staff-create",body);
     req.then(function(r){
-      if(r.id||r.ok){toast(wasEdit?"تم الحفظ":(r.direct?"تمت الإضافة":"تمت الإضافة — كود التفعيل راح للموظف نفسه"));editId=0;TMF.showAdd=false;teamLoad()}else{$("tErr").textContent=r.message||"تعذّر الحفظ"}
+      if(r.id||r.ok){toast(wasEdit?"تم الحفظ":(r.direct?"تمت الإضافة":"تمت الإضافة — كود التفعيل راح للموظف نفسه"));TMF.focusId=r.id||keepId;editId=0;TMF.showAdd=false;teamLoad()}else{$("tErr").textContent=(r.message||"تعذّر الحفظ")+(r.detail?" — السبب: "+r.detail:"")}
     }).catch(function(){$("tErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
   }
