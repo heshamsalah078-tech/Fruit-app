@@ -158,6 +158,7 @@ var P=[
 var usedRefs=[],payErr="";
 var me={name:"",phone:"",addr:"",zone_id:0},editing=false;
 try{var sv=JSON.parse(localStorage.getItem("sf_me")||"null");if(sv&&sv.phone)me=sv}catch(x){}
+if(!me.phone){var cph=getCookie("sf_ph");if(cph)me={name:"",phone:cph,addr:"",zone_id:0}}   // storage was cleared but the phone cookie is still here: the app signs back in by itself
 var incomingRef="";
 try{
   var qp=new URLSearchParams(location.search);
@@ -172,8 +173,13 @@ function loadRefWelcome(){
     if(r&&r.valid){refWelcome=r;draw()}
   }).catch(function(){});
 }
-function saveMe(){try{localStorage.setItem("sf_me",JSON.stringify(me))}catch(x){}}
-function hello(){$("hi").textContent=me.phone?"أهلاً "+me.name+" 👋":"خضار وفواكه طازجة لباب بيتك"}
+function saveMe(){
+  try{localStorage.setItem("sf_me",JSON.stringify(me))}catch(x){}
+  try{if(me&&me.phone)document.cookie="sf_ph="+encodeURIComponent(me.phone)+";max-age=31536000;path=/;SameSite=Lax"}catch(x){}
+}
+function getCookie(n){try{var m=document.cookie.match(new RegExp("(?:^|; )"+n+"=([^;]*)"));return m?decodeURIComponent(m[1]):""}catch(x){return ""}}
+function storageOk(){try{var k="sf_probe";localStorage.setItem(k,"1");var ok=localStorage.getItem(k)==="1";localStorage.removeItem(k);return ok}catch(x){return false}}
+function hello(){$("hi").textContent=me.phone?"أهلاً "+(me.name||"")+" 👋":"خضار وفواكه طازجة لباب بيتك"}
 var INP='width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;margin-bottom:8px';
 
 var nextPid=11;
@@ -261,7 +267,7 @@ function complaintCard(){
 var DB={customers:[],orders:[]}; // simulated database tables
 var API=(location.protocol==="http:"||location.protocol==="https:")&&location.hostname.indexOf("claudeusercontent")<0?"":"https://fruit-app-production.up.railway.app";
 var TOK="",ROLE="";try{TOK=localStorage.getItem("sf_tok")||"";ROLE=localStorage.getItem("sf_role")||""}catch(x){}
-function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){logout();}return r.json()})}
+function apiCall(m,u,b){var h={"Content-Type":"application/json"};if(TOK)h.Authorization="Bearer "+TOK;return fetch(API+u,{method:m,headers:h,body:b?JSON.stringify(b):undefined}).then(function(r){if(r.status===401&&TOK&&u.indexOf("/auth/")<0){TOK="";try{localStorage.removeItem("sf_tok")}catch(x){}healSession();}return r.json()})}
 function dbSaveCustomer(c){}
 var _cartSyncT=null;
 function syncCart(){
@@ -534,7 +540,8 @@ document.addEventListener("click",function(e){
       draw()
     }).catch(function(){payErr="تعذّر الاتصال بالخادم";draw()})}
   else if(t.id==="order"){
-    if(!me.phone){toast("أكمل بياناتك فوق أولًا لإتمام الطلب");var ckn=$("ckName");if(ckn)ckn.focus();return}
+    if(!me.phone){toast("سجّل بياناتك الأول عشان نعرف نوصّل الأوردر لمين");var ckn=$("ckName");if(ckn)ckn.focus();return}
+    if(!me.id||!TOK){HEAL_N=0;healSession();toast("لحظة، بنرجّع بياناتك... اضغط تأكيد الطلب تاني");return}
     var nm=me.name,ph=me.phone,ad=me.addr;
     dbSaveCustomer(me);
     var s=sub(),dd=Math.min(estimateReferralDiscount(),s); // display estimate only — server computes the real, authoritative discount
@@ -639,8 +646,29 @@ document.addEventListener("click",function(e){
 function authV(){
   var el=$("auth");if(el)el.style.display="none";
 }
-function startApp(){authV();hello();draw();if(TOK){refreshMyOrders();loadReferral(true)}loadRefWelcome();go("shop")}
-function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}draw()}
+function startApp(){authV();hello();draw();if(TOK){refreshMyOrders();loadReferral(true)}else if(me.phone){healSession()}loadRefWelcome();go("shop")}
+// I know this customer's phone (saved profile or cookie) but have no valid token: sign him in again by phone, no typing.
+var HEALING=false,HEAL_N=0;
+function healSession(){
+  if(HEALING||!me.phone||HEAL_N>=2)return;
+  HEALING=true;HEAL_N++;TOK="";
+  apiCall("POST","/auth/customer-identify",{phone:me.phone}).then(function(r){
+    HEALING=false;
+    if(r&&r.token){
+      TOK=r.token;ROLE="customer";
+      me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address,zone_id:r.customer.zone_id||0};syncFee();
+      try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE)}catch(x){}
+      saveMe();hello();refreshMyOrders();loadReferral(true);loadOffers();draw();
+    }else if(r&&r.error==="otp_required"){
+      startOtp("",me.phone,"",function(){refreshMyOrders();loadOffers();draw()},function(){},0);
+    }else if(r&&r.error==="not_registered"){
+      me={name:"",phone:"",addr:"",zone_id:0};
+      try{localStorage.removeItem("sf_me")}catch(x){}try{document.cookie="sf_ph=;max-age=0;path=/"}catch(x){}
+      hello();draw();
+    }
+  }).catch(function(){HEALING=false});
+}
+function logout(){TOK="";ROLE="";me={name:"",phone:"",addr:""};try{localStorage.removeItem("sf_tok");localStorage.removeItem("sf_role");localStorage.removeItem("sf_me")}catch(x){}try{document.cookie="sf_ph=;max-age=0;path=/"}catch(x){}draw()}
 // ----- OTP (phone verification) -----
 // otpState holds the pending registration so we can finish it right after the code is confirmed.
 var otpState=null; // {name,phone,addr,onOk,onFail,verification_token}
@@ -734,6 +762,7 @@ function finishIdentify(name,phone,addr,verification_token,onOk,onFail,zoneId){
       TOK=r.token;ROLE="customer";me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address,zone_id:r.customer.zone_id||0};syncFee();
       try{localStorage.setItem("sf_tok",TOK);localStorage.setItem("sf_role",ROLE);saveMe();localStorage.removeItem("sf_ref")}catch(x){}
       incomingRef="";refWelcome=null;
+      if(!storageOk())setTimeout(function(){toast("⚠️ المتصفح مش بيحفظ بياناتك (غالباً وضع التصفح الخفي). هتحتاج تكتب رقمك كل مرة.")},1800);
       hello();loadReferral(true);if(onOk)onOk();
       if(r.referral&&r.referral.ok===false){
         var m=referralRejectMsg(r.referral.reason);
