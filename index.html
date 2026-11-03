@@ -123,6 +123,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 <header><h1>🥬 سوق الطازج</h1><p id="hi">خضار وفواكه طازجة لباب بيتك</p></header>
 
 <section id="shop" class="on">
+  <div id="restoreBar"></div>
   <div id="offStrip"></div>
   <div id="chips"></div>
   <div class="grid" id="grid"></div>
@@ -158,6 +159,7 @@ var P=[
 var usedRefs=[],payErr="";
 var me={name:"",phone:"",addr:"",zone_id:0},editing=false;
 try{var sv=JSON.parse(localStorage.getItem("sf_me")||"null");if(sv&&sv.phone)me=sv}catch(x){}
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(x){}
 if(!me.phone){var cph=getCookie("sf_ph");if(cph)me={name:"",phone:cph,addr:"",zone_id:0}}   // storage was cleared but the phone cookie is still here: the app signs back in by itself
 var incomingRef="";
 try{
@@ -179,6 +181,7 @@ function saveMe(){
 }
 function getCookie(n){try{var m=document.cookie.match(new RegExp("(?:^|; )"+n+"=([^;]*)"));return m?decodeURIComponent(m[1]):""}catch(x){return ""}}
 function storageOk(){try{var k="sf_probe";localStorage.setItem(k,"1");var ok=localStorage.getItem(k)==="1";localStorage.removeItem(k);return ok}catch(x){return false}}
+if(me.phone)saveMe();   // refresh the long-lived phone cookie on every visit
 function hello(){$("hi").textContent=me.phone?"أهلاً "+(me.name||"")+" 👋":"خضار وفواكه طازجة لباب بيتك"}
 var INP='width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;margin-bottom:8px';
 
@@ -502,7 +505,15 @@ function refV(){
   }
   $("ref").innerHTML=html;
 }
-function draw(){
+function renderRestoreBar(){
+  var el=$("restoreBar");if(!el)return;
+  var need=!me.phone&&!TOK;
+  if(need&&!el.dataset.on){
+    el.innerHTML='<div class="card" style="margin:10px 12px 0"><b>👋 عميل قديم؟</b><div class="mute" style="margin:2px 0 6px">اكتب رقم موبايلك وهنرجّع بياناتك وأوردراتك.</div><div style="display:flex;gap:8px"><input id="rbPhone2" type="tel" inputmode="tel" placeholder="رقم الموبايل" style="flex:1;min-width:0;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit"><button class="chip" id="rbGo2">رجّع بياناتي</button></div><p id="rbErr2" style="color:var(--t);margin:6px 0 0"></p></div>';
+    el.dataset.on="1";
+  }else if(!need&&el.dataset.on){el.innerHTML="";el.dataset.on=""}
+}
+function draw(){renderRestoreBar();
   acctV();shop();cartV();adminV();ordV();storeV();drvV();refV();
   var c=count();$("cc").hidden=!c;$("cc").textContent=num(c);
 }
@@ -605,11 +616,11 @@ document.addEventListener("click",function(e){
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
   }
   else if(t.id==="otpCancel"){otpState=null;draw()}
-  else if(t.id==="rbGo"){
-    var rph=($("rbPhone").value||"").trim();
-    if(!rph){$("rbErr").textContent="اكتب رقم موبايلك";return}
-    t.disabled=true;$("rbErr").textContent="";
-    identifyCustomer("",rph,"",function(){t.disabled=false;refreshMyOrders();loadOffers();draw();toast("أهلاً بيك تاني يا "+me.name+" 👋")},function(msg){t.disabled=false;var e=$("rbErr");if(e)e.textContent=msg||"تعذّر استرجاع بياناتك"});
+  else if((t.id==="rbGo"||t.id==="rbGo2")){
+    var rph=($("rbPhone"+(t.id==="rbGo2"?"2":"")).value||"").trim();
+    if(!rph){$("rbErr"+(t.id==="rbGo2"?"2":"")).textContent="اكتب رقم موبايلك";return}
+    t.disabled=true;$("rbErr"+(t.id==="rbGo2"?"2":"")).textContent="";
+    identifyCustomer("",rph,"",function(){t.disabled=false;refreshMyOrders();loadOffers();draw();toast("أهلاً بيك تاني يا "+me.name+" 👋")},function(msg){t.disabled=false;var e=$("rbErr"+(t.id==="rbGo2"?"2":""));if(e)e.textContent=msg||"تعذّر استرجاع بياناتك"});
   }
   else if(t.id==="ckReg"){
     var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim(),z2=Number(($("ckZone")||{}).value)||0;
