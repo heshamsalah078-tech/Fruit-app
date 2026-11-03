@@ -209,7 +209,7 @@ function refWelcomeCard(){
 function acctV(){
   if(me.phone&&!editing){$("acct").innerHTML='<div class="card"><h2>👤 '+me.name+'</h2><p class="mute">📞 '+me.phone+'<br>📍 '+me.addr+(zoneById(me.zone_id)?' — '+esc(zoneById(me.zone_id).name):'')+'</p><p class="mute">تم التعرف عليك تلقائيًا، لا حاجة لتسجيل الدخول.</p><button class="chip" id="editme">تعديل بياناتي</button></div>'+complaintCard();return}
   if(otpState){$("acct").innerHTML=otpCard();return}
-  $("acct").innerHTML=refWelcomeCard()+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'مرحبًا بك! سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'">'+zoneSelect("rZone",me.zone_id)+'<button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
+  $("acct").innerHTML=refWelcomeCard()+(editing?'':'<div class="card"><h2>👋 سجّلت قبل كده؟</h2><p class="mute">اكتب رقم موبايلك بس، وهنرجّع لك بياناتك وأوردراتك على أي موبايل.</p><input id="rbPhone" type="tel" inputmode="tel" placeholder="رقم الموبايل" style="'+INP+'"><button class="big" id="rbGo">رجّع بياناتي</button><p id="rbErr" style="color:var(--t);margin:6px 0 0"></p></div>')+'<div class="card"><h2>'+(editing?'تعديل بياناتي':'أول مرة؟ سجّل بياناتك مرة واحدة')+'</h2><p class="mute">سنتعرّف عليك تلقائيًا في كل مرة تفتح فيها التطبيق.</p><input id="rName" placeholder="الاسم" value="'+me.name+'" style="'+INP+'"><input id="rPhone" type="tel" placeholder="رقم الموبايل" value="'+me.phone+'" style="'+INP+'"><input id="rAddr" placeholder="العنوان بالتفصيل" value="'+me.addr+'" style="'+INP+'">'+zoneSelect("rZone",me.zone_id)+'<button class="big" id="reg">'+(editing?'حفظ التعديل':'تسجيل')+'</button></div>'}
 var cpxRecorder=null,cpxChunks=[],cpxBlob=null,cpxStream=null;
 function toggleComplaintRec(btn){
   if(cpxRecorder&&cpxRecorder.state==="recording"){
@@ -280,6 +280,7 @@ function dbSaveOrder(o,onOk,onFail){
     else{loadProducts();if(onFail)onFail((r&&r.message)||"تعذّر إرسال الطلب، حاول مرة أخرى")}
   }).catch(function(){if(onFail)onFail("تعذّر الاتصال بالخادم")})
 }
+function srvLines(x){return (x.items||[]).map(function(i){return {id:i.product_id,n:i.name,e:i.emoji||"",q:Number(i.quantity),u:i.unit||"",line:Number(i.line_total!=null?i.line_total:Number(i.quantity)*Number(i.unit_price||0)),gift:!!i.is_gift}})}
 function refreshMyOrders(){
   if(!me.id)return;
   apiCall("GET","/orders/customer/"+me.id).then(function(r){
@@ -291,7 +292,7 @@ function refreshMyOrders(){
         pay:x.payment_status,ref:x.payment_ref,created_at:x.created_at,
         prep_started_at:x.prep_started_at,prepared_at:x.prepared_at,
         delivery_started_at:x.delivery_started_at,delivered_at:x.delivered_at,
-        items:local.items,lines:local.lines,cust:me.name,phone:me.phone,addr:me.addr
+        items:local.items||srvLines(x).length,lines:local.lines||srvLines(x),cust:me.name,phone:me.phone,addr:me.addr
       });
     });
     draw();
@@ -597,6 +598,12 @@ document.addEventListener("click",function(e){
     }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
   }
   else if(t.id==="otpCancel"){otpState=null;draw()}
+  else if(t.id==="rbGo"){
+    var rph=($("rbPhone").value||"").trim();
+    if(!rph){$("rbErr").textContent="اكتب رقم موبايلك";return}
+    t.disabled=true;$("rbErr").textContent="";
+    identifyCustomer("",rph,"",function(){t.disabled=false;refreshMyOrders();loadOffers();draw();toast("أهلاً بيك تاني يا "+me.name+" 👋")},function(msg){t.disabled=false;var e=$("rbErr");if(e)e.textContent=msg||"تعذّر استرجاع بياناتك"});
+  }
   else if(t.id==="ckReg"){
     var n2=$("ckName").value.trim(),p2=$("ckPhone").value.trim(),a2=$("ckAddr").value.trim(),z2=Number(($("ckZone")||{}).value)||0;
     if(!n2||p2.replace(/\D/g,"").length<10||!a2){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}

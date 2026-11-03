@@ -92,11 +92,11 @@ function init({ pool, requireAuth, express, withItems }) {
     try {
       let tbl = 'staff';
       let r = await pool.query(
-        'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM staff WHERE phone=$1', [phone]);
+        'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM staff WHERE phone = ANY($1::text[])', [[phone, normPhone(phone)]]);
       if (!r.rows.length) {
         tbl = 'couriers';
         r = await pool.query(
-          'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM couriers WHERE phone=$1', [phone]);
+          'SELECT id, active, activation_code_hash, activation_expires_at, activation_attempts FROM couriers WHERE phone = ANY($1::text[])', [[phone, normPhone(phone)]]);
       }
       const s = r.rows[0];
       if (!s || !s.active || !s.activation_code_hash) { await bcrypt.compare(code, DUMMY_HASH); return fail(); }
@@ -119,6 +119,26 @@ function init({ pool, requireAuth, express, withItems }) {
     }
   });
 
+// Egyptian mobile numbers: accept Arabic-Indic digits, spaces, dashes and brackets (what a phone keyboard may type).
+function normPhone(p) {
+  return String(p == null ? '' : p).trim()
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+    .replace(/[\s\-()]/g, '');
+}
+
+  // A phone number belongs to ONE person across employees and couriers. Works even if the couriers table does not exist yet.
+  async function phoneTakenAnywhere(phone) {
+    try {
+      const r = await pool.query('SELECT id FROM staff WHERE phone=$1 UNION ALL SELECT id FROM couriers WHERE phone=$1', [phone]);
+      return r.rows.length > 0;
+    } catch (e) {
+      if (e.code !== '42P01') throw e;
+      const r = await pool.query('SELECT id FROM staff WHERE phone=$1', [phone]);
+      return r.rows.length > 0;
+    }
+  }
+
   // ---------- manager: create / edit / reset (admin only) ----------
   router.post('/auth/staff-create', requireAuth('admin'), async (req, res) => {
     const { name, phone, role, job_title, address, phone2, settlement_mode, password } = req.body;
@@ -133,24 +153,24 @@ function init({ pool, requireAuth, express, withItems }) {
       if (!(await activationRequired()) && badPassword(password)) {
         return res.status(400).json({ error: 'password_required', message: 'اكتب كلمة سر للموظف (6 أحرف على الأقل).' });
       }
-      const dup = await pool.query('SELECT id FROM staff WHERE phone=$1 UNION ALL SELECT id FROM couriers WHERE phone=$1', [String(phone).trim()]);
-      if (dup.rows.length) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
+      const phoneN = normPhone(phone);
+      if (await phoneTakenAnywhere(phoneN)) return res.status(409).json({ error: 'phone_taken', message: 'رقم الموبايل مستخدم بالفعل.' });
       let col = null;
       if (role === 'delivery') {
         const f = await pool.query(`SELECT id FROM staff WHERE role='finance' AND active=true ORDER BY id LIMIT 1`);
         col = f.rows[0] ? f.rows[0].id : null;
       }
       const r = await pool.query(
-        `INSERT INTO staff (name, phone, phone2, address, password_hash, role, job_title, settlement_mode, collector_id)
-         VALUES ($1,$2,$3,$4,NULL,$5,$6,$7,$8) RETURNING id, name, phone, role, job_title, settlement_mode`,
-        [String(name).trim(), String(phone).trim(), phone2 ? String(phone2).trim() : null, address ? String(address).trim() : null,
-         role, job_title ? String(job_title).trim() : null, role === 'delivery' ? (settlement_mode || 'per_order') : null, col]);
+        `INSERT INTO staff (name, phone, phone2, address, password_hash, role, job_title, collector_id)
+         VALUES ($1,$2,$3,$4,NULL,$5,$6,$7) RETURNING id, name, phone, role, job_title`,
+        [String(name).trim(), phoneN, phone2 ? String(phone2).trim() : null, address ? String(address).trim() : null,
+         role, job_title ? String(job_title).trim() : null, col]);
       await audit(pool, 'staff_created', req.user.id, r.rows[0].id, { role });
       const d = await issueActivation(pool, r.rows[0].id, r.rows[0].phone, req.user.id, 'activation_issued', password);
       res.json({ ...r.rows[0], activation_sent: d.sent, direct: !!d.direct });
     } catch (e) {
       console.error('staff-create failed', e.message);
-      res.status(500).json({ error: 'failed', message: 'تعذّرت الإضافة.' });
+      res.status(500).json({ error: 'failed', message: 'تعذّرت الإضافة.', detail: e.message });
     }
   });
 
@@ -164,17 +184,15 @@ function init({ pool, requireAuth, express, withItems }) {
     }
     try {
       const r = await pool.query(
-        `UPDATE staff SET job_title=$1, role=$2, address=$3, phone2=$4,
-                settlement_mode = CASE WHEN $2='delivery' THEN COALESCE($5, settlement_mode, 'per_order') ELSE NULL END
-          WHERE id=$6 RETURNING id`,
+        `UPDATE staff SET job_title=$1, role=$2, address=$3, phone2=$4 WHERE id=$5 RETURNING id`,
         [job_title ? String(job_title).trim() : null, role, address ? String(address).trim() : null,
-         phone2 ? String(phone2).trim() : null, settlement_mode || null, req.params.id]);
+         phone2 ? String(phone2).trim() : null, req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
       await audit(pool, 'staff_edited', req.user.id, Number(req.params.id), { role });
       res.json({ ok: true });
     } catch (e) {
       console.error('staff patch failed', e.message);
-      res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' });
+      res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.', detail: e.message });
     }
   });
 

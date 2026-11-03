@@ -272,10 +272,18 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
               OR EXISTS (SELECT 1 FROM trip_offers WHERE courier_id=${p})
               OR EXISTS (SELECT 1 FROM courier_earnings WHERE courier_id=${p})
               OR EXISTS (SELECT 1 FROM courier_payouts WHERE courier_id=${p}))`;
+// Egyptian mobile numbers: accept Arabic-Indic digits, spaces, dashes and brackets (what a phone keyboard may type).
+function normPhone(p) {
+  return String(p == null ? '' : p).trim()
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+    .replace(/[\s\-()]/g, '');
+}
+
   const phoneTaken = async (phone, exceptCourierId) => {
     const r = await pool.query(
       `SELECT id FROM staff WHERE phone=$1 UNION ALL SELECT id FROM couriers WHERE phone=$1 AND ($2::int IS NULL OR id<>$2::int)`,
-      [String(phone).trim(), exceptCourierId || null]);
+      [normPhone(phone), exceptCourierId || null]);
     return r.rows.length > 0;
   };
 
@@ -319,7 +327,7 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
       const r = await pool.query(
         `INSERT INTO couriers (name, phone, phone2, address, password_hash, settlement_mode, collector_id)
          VALUES ($1,$2,$3,$4,NULL,$5,$6) RETURNING id, name, phone, phone2, address, settlement_mode, collector_id`,
-        [String(name).trim(), String(phone).trim(), phone2 || null, address || null, mode, col]
+        [String(name).trim(), normPhone(phone), phone2 || null, address || null, mode, col]
       );
       const d = await issueActivation(pool, r.rows[0].id, r.rows[0].phone, req.user.id, 'activation_issued', password, 'couriers');
       res.json({ ok: true, courier: r.rows[0], activation_sent: d.sent });

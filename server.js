@@ -96,6 +96,14 @@ function makeToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 }
 
+// Egyptian mobile numbers: accept Arabic-Indic digits, spaces, dashes and brackets (what a phone keyboard may type).
+function normPhone(p) {
+  return String(p == null ? '' : p).trim()
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+    .replace(/[\s\-()]/g, '');
+}
+
 // Middleware: require a valid logged-in token, optionally restricted to certain roles
 function requireAuth(...roles) {
   return (req, res, next) => {
@@ -272,37 +280,45 @@ app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
 // way so the rest of the API (orders, cart sync, complaints) keeps working unchanged.
 app.post('/auth/customer-identify', async (req, res) => {
   const { name, phone, address, referral_code, verification_token, zone_id } = req.body;
-  if (!name || !phone || !address) {
-    return res.status(400).json({ error: 'missing_fields', message: 'من فضلك أكمل الاسم ورقم الموبايل والعنوان.' });
-  }
+  const rawPhone = String(phone == null ? '' : phone).trim();
+  const phoneN = normPhone(rawPhone);
+  if (!phoneN) return res.status(400).json({ error: 'missing_fields', message: 'اكتب رقم موبايلك.' });
+  // Phone only (no name / address) = "I registered before, bring my data back" (e.g. from another phone or browser).
+  const restoring = !name || !address;
   // Phone verification (OTP) — only enforced once the admin switches it on (needs an SMS provider).
   const refCfg = await referral.getSettings();
   if (refCfg.otp_enforced && !(await referral.isPhoneVerified(phone, verification_token))) {
     return res.status(403).json({ error: 'otp_required', message: 'محتاجين نتأكد من رقم موبايلك بكود SMS.' });
   }
-  if (zone_id) {
+  const existing = await pool.query('SELECT * FROM customers WHERE phone = ANY($1::text[])', [[...new Set([rawPhone, phoneN])]]);
+  if (restoring && !existing.rows.length) {
+    return res.status(404).json({ error: 'not_registered', message: 'الرقم ده مش مسجّل عندنا. اكتب اسمك وعنوانك وسجّل بياناتك.' });
+  }
+  if (!restoring && zone_id) {
     const zc = await pool.query('SELECT 1 FROM delivery_zones WHERE id = $1 AND active = true', [Number(zone_id)]);
     if (!zc.rows.length) return res.status(422).json({ error: 'out_of_area', message: zones.OUT_OF_AREA });
   }
-  const existing = await pool.query('SELECT * FROM customers WHERE phone=$1', [phone]);
   let customer;
   let isNewCustomer = false;
-  if (existing.rows.length) {
+  if (restoring) {
+    const c = existing.rows[0];
+    customer = { id: c.id, name: c.name, phone: c.phone, address: c.address, zone_id: c.zone_id };   // nothing is overwritten
+  } else if (existing.rows.length) {
     const r = await pool.query(
-      'UPDATE customers SET name=$1, address=$2 WHERE phone=$3 RETURNING id, name, phone, address, zone_id',
-      [name, address, phone]
+      'UPDATE customers SET name=$1, address=$2 WHERE id=$3 RETURNING id, name, phone, address, zone_id',
+      [name, address, existing.rows[0].id]
     );
     customer = r.rows[0];
   } else {
     const r = await pool.query(
       `INSERT INTO customers (name, phone, address, role)
        VALUES ($1,$2,$3,'customer') RETURNING id, name, phone, address, zone_id`,
-      [name, phone, address]
+      [name, phoneN, address]
     );
     customer = r.rows[0];
     isNewCustomer = true;
   }
-  if (zone_id && (await zones.setCustomerZone(pool, customer.id, zone_id).catch(() => false))) customer.zone_id = Number(zone_id);
+  if (!restoring && zone_id && (await zones.setCustomerZone(pool, customer.id, zone_id).catch(() => false))) customer.zone_id = Number(zone_id);
   let referralResult = null;
   try {
     customer.referral_code = await referral.ensureCode(customer.id);
@@ -311,14 +327,15 @@ app.post('/auth/customer-identify', async (req, res) => {
     console.error('referral on identify failed', e.message); // never block registration because of referrals
   }
   const token = makeToken({ id: customer.id, role: 'customer', name: customer.name });
-  res.json({ token, customer, referral: referralResult });
+  res.json({ token, customer, referral: referralResult, returning: restoring });
 });
 
 app.post('/auth/staff-login', async (req, res) => {
   const { phone, password } = req.body;
   // Employees live in `staff`, delivery couriers in their own `couriers` table (phone numbers are unique across both).
-  let r = await pool.query('SELECT * FROM staff WHERE phone=$1 AND active=true', [phone]);
-  if (!r.rows.length) r = await pool.query(`SELECT *, 'delivery'::text AS role FROM couriers WHERE phone=$1 AND active=true`, [phone]);
+  const cands = [...new Set([String(phone == null ? '' : phone).trim(), normPhone(phone)])];   // as typed, and cleaned up
+  let r = await pool.query('SELECT * FROM staff WHERE phone = ANY($1::text[]) AND active=true', [cands]);
+  if (!r.rows.length) r = await pool.query(`SELECT *, 'delivery'::text AS role FROM couriers WHERE phone = ANY($1::text[]) AND active=true`, [cands]);
   if (!r.rows.length) {
     return res.status(401).json({ error: 'invalid_credentials', message: 'بيانات الدخول غير صحيحة.' });
   }
@@ -560,12 +577,13 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
 });
 
 app.get('/orders/customer/:id', requireAuth('customer', 'admin'), async (req, res) => {
+  if (req.user.role === 'customer' && Number(req.params.id) !== Number(req.user.id)) return res.status(403).json({ error: 'forbidden' });
   const r = await pool.query(
     'SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',
     [req.params.id]
   );
   try { await etaCalc.attach(r.rows); } catch (e) { console.error('eta', e.message); } // the estimate is a nicety: never break the order list
-  res.json(r.rows);
+  res.json(await withItems(r.rows));
 });
 
 // Admin-only: log of failed order attempts caused by insufficient stock —
@@ -657,6 +675,54 @@ app.get('/orders/delayed', requireAuth('admin', 'ops'), async (req, res) => {
     );
   }
   res.json(await withItems(r.rows));
+});
+
+// Ops/admin live board: every order by stage (being prepared / ready & waiting for delivery / on the way / delivered today),
+// with who is handling it, how long it has been there, and whether it is LATE against its own due times.
+app.get('/ops/board', requireAuth('admin', 'ops'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT o.id, o.status, o.total, o.zone_name,
+              c.name AS customer_name, c.phone AS customer_phone,
+              p.name AS prep_name, cr.name AS courier_name, t.status AS trip_status,
+              EXTRACT(EPOCH FROM (now() - o.created_at))::int AS age_s,
+              EXTRACT(EPOCH FROM (now() - o.prepared_at))::int AS since_ready_s,
+              EXTRACT(EPOCH FROM (now() - o.delivery_started_at))::int AS since_dispatch_s,
+              EXTRACT(EPOCH FROM (now() - o.delivered_at))::int AS since_delivered_s,
+              EXTRACT(EPOCH FROM (o.prep_due_at - now()))::int AS prep_remaining_s,
+              EXTRACT(EPOCH FROM (o.pickup_due_at - now()))::int AS pickup_remaining_s,
+              EXTRACT(EPOCH FROM (o.delivery_due_at - now()))::int AS delivery_remaining_s,
+              EXTRACT(EPOCH FROM (o.delivered_at - o.created_at))::int AS total_s,
+              EXTRACT(EPOCH FROM (o.delivered_at - o.delivery_due_at))::int AS delivered_late_s
+         FROM orders o
+         JOIN customers c ON c.id = o.customer_id
+         LEFT JOIN staff p ON p.id = COALESCE(o.prep_staff_id, o.assigned_prep_id)
+         LEFT JOIN trips t ON t.id = o.trip_id
+         LEFT JOIN couriers cr ON cr.id = COALESCE(o.delivery_staff_id, t.courier_id, o.assigned_delivery_id)
+        WHERE o.status IN ('awaiting_prep','preparing','awaiting_delivery','on_the_way')
+           OR (o.status = 'delivered' AND o.delivered_at >= (date_trunc('day', now() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo'))
+        ORDER BY o.created_at`);
+    const lateOf = (s) => (s != null && s < 0 ? Math.ceil(-s / 60) : 0);   // minutes past due, 0 = not late
+    const stages = { preparing: [], awaiting: [], on_the_way: [], delivered: [] };
+    for (const o of r.rows) {
+      const row = { id: o.id, customer_name: o.customer_name, customer_phone: o.customer_phone, zone_name: o.zone_name, total: Number(o.total),
+                    prep_name: o.prep_name, courier_name: o.courier_name, trip_status: o.trip_status };
+      if (o.status === 'awaiting_prep' || o.status === 'preparing') {
+        stages.preparing.push({ ...row, started: o.status === 'preparing', age_min: Math.round(o.age_s / 60), remaining_min: o.prep_remaining_s == null ? null : Math.round(o.prep_remaining_s / 60), late_min: lateOf(o.prep_remaining_s) });
+      } else if (o.status === 'awaiting_delivery') {
+        stages.awaiting.push({ ...row, ready_min: o.since_ready_s == null ? null : Math.round(o.since_ready_s / 60), remaining_min: o.pickup_remaining_s == null ? null : Math.round(o.pickup_remaining_s / 60), late_min: lateOf(o.pickup_remaining_s) });
+      } else if (o.status === 'on_the_way') {
+        stages.on_the_way.push({ ...row, out_min: o.since_dispatch_s == null ? null : Math.round(o.since_dispatch_s / 60), remaining_min: o.delivery_remaining_s == null ? null : Math.round(o.delivery_remaining_s / 60), late_min: lateOf(o.delivery_remaining_s) });
+      } else {
+        stages.delivered.push({ ...row, ago_min: o.since_delivered_s == null ? null : Math.round(o.since_delivered_s / 60), total_min: o.total_s == null ? null : Math.round(o.total_s / 60), late_min: o.delivered_late_s > 0 ? Math.ceil(o.delivered_late_s / 60) : 0 });
+      }
+    }
+    stages.delivered.reverse();   // newest delivery first
+    res.json({ stages });
+  } catch (e) {
+    console.error('ops board failed', e.message);
+    res.status(500).json({ error: 'failed', message: 'تعذّر تحميل المتابعة.' });
+  }
 });
 
 app.get('/orders', requireAuth('admin'), async (req, res) => {

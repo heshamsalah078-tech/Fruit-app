@@ -106,6 +106,7 @@ html[data-boot="app"] #app{display:block!important}
 <section id="store"></section>
 <section id="driver"></section>
 <section id="delayed"></section>
+<section id="board"></section>
 <section id="audit"></section>
 <section id="zones"></section>
 <section id="offers"></section>
@@ -139,7 +140,7 @@ function apiCall(method,path,body){
   if(TOK)opt.headers.Authorization="Bearer "+TOK;
   if(body)opt.body=JSON.stringify(body);
   return fetch(API+path,opt).then(function(r){
-    if(r.status===401){logout();return{}}
+    if(r.status===401&&TOK){logout();return{}}   // an expired session logs out; a wrong password on the login form just shows its message
     return r.json().catch(function(){return{}})
   });
 }
@@ -158,8 +159,8 @@ var NAV={
   prep:[["store","🧑‍🍳","التجهيز"]],
   delivery:[["driver","🛵","التوصيل"],["cash","💵","حساباتي"]],
   finance:[["cash","💵","التحصيل"]],
-  ops:[["ops","🗂️","التشغيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["audit","❌","الإلغاءات والتعيين اليدوي"]],
-  admin:[["ops","🗂️","التشغيل"],["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["offers","🎁","العروض"],["audit","❌","الإلغاءات والتعيين اليدوي"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
+  ops:[["board","📊","المتابعة"],["ops","🗂️","التشغيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["audit","❌","الإلغاءات والتعيين اليدوي"]],
+  admin:[["ops","🗂️","التشغيل"],["board","📊","المتابعة"],["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["offers","🎁","العروض"],["audit","❌","الإلغاءات والتعيين اليدوي"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["me","👤","حسابي"],["out","🚪","خروج"]]);
@@ -186,7 +187,63 @@ function go(t){
   if(t==="cash")cashLoad();
   if(t==="couriers")crLoad();
   if(t==="ops")opsLoad();
+  if(t==="board")bdLoad();
   if(t==="me")meLoad();
+}
+
+/* ---------- live board (ops + admin): every order by stage, with delays ---------- */
+var BD=null,BDL=false;
+function bdLoad(){
+  apiCall("GET","/ops/board").then(function(r){
+    if(r&&r.stages){BD=r.stages;BD.at=new Date();bdV()}
+    else if(!BD&&$("board"))$("board").innerHTML='<h1 style="font-size:19px">📊 المتابعة</h1><p class="mute">تعذّر تحميل المتابعة، هنحاول تاني.</p>';
+  }).catch(function(){});
+}
+function bdV(){
+  var el=$("board");if(!el||!BD)return;
+  var STG=[
+    ["preparing","🧑‍🍳","جاري التجهيز"],
+    ["awaiting","📦","جاهز ومستني التوصيل"],
+    ["on_the_way","🛵","في الطريق للعميل"],
+    ["delivered","✅","تم التسليم النهارده"]];
+  function min(n){return n==null?"—":(n+" د")}
+  function late(o){return o.late_min>0}
+  var tiles=STG.map(function(g){
+    var rows=BD[g[0]],nl=rows.filter(late).length;
+    return '<div class="card" style="margin:0;text-align:center;padding:10px 6px"><div>'+g[1]+' '+g[2]+'</div><div style="font-size:26px;font-weight:800">'+rows.length+'</div>'+
+      (nl?'<div style="color:#b42318;font-weight:700">⏰ '+nl+' متأخر</div>':'<div class="mute">'+(g[0]==="delivered"?'':'مفيش تأخير')+'</div>')+'</div>'}).join("");
+  var tm=BD.at.toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"});
+  var h='<h1 style="font-size:19px">📊 المتابعة</h1>'+
+    '<p class="mute" style="margin:0 0 8px">بتتحدّث لوحدها كل 15 ثانية · آخر تحديث '+esc(tm)+'</p>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'+tiles+'</div>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;font-weight:600"><input type="checkbox" id="bdLate" style="width:18px;height:18px"'+(BDL?' checked':'')+'> المتأخرة بس</label>';
+  function line(g,o){
+    var who="",tm2="";
+    if(g==="preparing"){
+      who='🧑‍🍳 المجهّز: '+esc(o.prep_name||"لسه ما اتعيّنش")+(o.started?'':' · لسه ما بدأش');
+      tm2='بقاله '+min(o.age_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
+    }else if(g==="awaiting"){
+      var ts=o.trip_status;
+      who=o.courier_name?('🛵 المندوب: '+esc(o.courier_name)+(ts==="assigned"?' (رايح المحل)':'')):(ts==="offering"?'🛵 بندوّر على مندوب':'🛵 مستني تعيين مندوب');
+      tm2='جاهز من '+min(o.ready_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
+    }else if(g==="on_the_way"){
+      who='🛵 المندوب: '+esc(o.courier_name||"—");
+      tm2='خرج من '+min(o.out_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
+    }else{
+      who='🛵 '+esc(o.courier_name||"—");
+      tm2='اتسلّم من '+min(o.ago_min)+' · المدة الكلية '+min(o.total_min);
+    }
+    return '<div style="padding:8px 0;border-top:1px solid var(--line)"><b>#'+o.id+'</b> · '+esc(o.customer_name)+(o.zone_name?' · '+esc(o.zone_name):'')+' <span class="mute">· '+o.total+' ج.م</span>'+
+      (o.late_min>0?' <span style="color:#b42318;font-weight:700">⏰ '+(g==="delivered"?'اتأخر ':'متأخر ')+o.late_min+' د</span>':'')+
+      '<div class="mute" style="margin-top:2px">'+who+'</div><div class="mute">'+tm2+'</div></div>';
+  }
+  STG.forEach(function(g){
+    var rows=BD[g[0]].slice();
+    if(BDL)rows=rows.filter(late);
+    rows.sort(function(a,b){return (b.late_min-a.late_min)});   // the most delayed first
+    h+='<div class="card"><h2>'+g[1]+' '+g[2]+' ('+rows.length+')</h2>'+(rows.length?rows.map(function(o){return line(g[0],o)}).join(""):'<p class="mute" style="margin:6px 0 0">'+(BDL?'مفيش متأخر هنا 👍':'مفيش أوردرات هنا دلوقتي.')+'</p>')+'</div>';
+  });
+  el.innerHTML=h;
 }
 
 /* ---------- team (admin) ---------- */
@@ -1115,6 +1172,7 @@ setInterval(function(){
   if(document.hidden||!TOK)return;
   if(ROLE==="delivery"&&CUR_TAB==="driver")courierRefresh();
   if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops"&&!TS_DIRTY)opsLoad();
+  if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="board")bdLoad();
 },15000);
 var TS_DIRTY=false;
 document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Grace|Bundle|Late)$/.test(e.target.id))TS_DIRTY=true});
@@ -1122,6 +1180,7 @@ document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
   if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
+  if(t.id==="bdLate"){BDL=t.checked;bdV();return}
   if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
   if(t.id==="actTog"){apiCall("PUT","/settings/activation",{required:t.checked}).then(function(r){if(r&&r.ok)ACT_REQ=r.required;else toast("تعذّر الحفظ");teamV()});return}
