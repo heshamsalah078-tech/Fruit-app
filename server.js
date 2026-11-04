@@ -19,9 +19,19 @@ app.use(express.json());
 
 // ---- PUSH NOTIFICATIONS (web-push) ----
 // Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Railway's Variables for production.
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BAwDYPNkTZd0eDBBXVYnrmD83iSv3YPxIvz43X4PHfBbitsjIni24aZo8asrKZchcqgippLL-XGOJwHK84NyOZE';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'vkaRyGbO8EoUE_qjAhdFpf69K_BhdWqhNpoH_jy86Og';
-webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+// A badly pasted key (quotes, spaces, a line break, "=" padding) must never stop the whole server from starting.
+const cleanKey = (k) => String(k || '').trim().replace(/^["']+|["']+$/g, '').replace(/\s+/g, '').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const DEFAULT_VAPID = { pub: 'BAwDYPNkTZd0eDBBXVYnrmD83iSv3YPxIvz43X4PHfBbitsjIni24aZo8asrKZchcqgippLL-XGOJwHK84NyOZE', priv: 'vkaRyGbO8EoUE_qjAhdFpf69K_BhdWqhNpoH_jy86Og' };
+let VAPID_PUBLIC_KEY = cleanKey(process.env.VAPID_PUBLIC_KEY) || DEFAULT_VAPID.pub;
+let VAPID_PRIVATE_KEY = cleanKey(process.env.VAPID_PRIVATE_KEY) || DEFAULT_VAPID.priv;
+try {
+  webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+} catch (e) {
+  console.error('VAPID keys from the environment are invalid (' + e.message + '). Using the built-in keys instead. Fix VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY in the hosting variables.');
+  VAPID_PUBLIC_KEY = DEFAULT_VAPID.pub; VAPID_PRIVATE_KEY = DEFAULT_VAPID.priv;
+  try { webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY); }
+  catch (e2) { console.error('Push notifications are disabled:', e2.message); }
+}
 
 // Send a push notification to every admin device subscribed. Removes subscriptions that are no longer valid.
 async function notifyAdmins(payload) {
