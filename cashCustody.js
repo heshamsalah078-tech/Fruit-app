@@ -203,6 +203,28 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
   });
 
 
+  // Read-only inquiry: every delivered order's cash status (collected / not received / not yet decided), with WHO collected it and WHEN.
+  // The admin uses this to audit the finance manager's collections; finance can see the same list. Nothing here changes any data.
+  router.get('/cash/collections', requireAuth('admin', 'finance'), async (req, res) => {
+    try {
+      const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+      const params = [String(days)];
+      let extra = '';
+      const cid = Number(req.query.courier_id);
+      if (Number.isInteger(cid) && cid > 0) { params.push(cid); extra += ` AND o.delivery_staff_id = $${params.length}`; }
+      const r = await pool.query(
+        `SELECT o.id, o.total, o.cash_status, o.cash_decided_at, o.delivered_at,
+                s.id AS courier_id, s.name AS courier_name, d.id AS collector_id, d.name AS collector_name
+           FROM orders o JOIN couriers s ON s.id = o.delivery_staff_id LEFT JOIN staff d ON d.id = o.cash_decided_by
+          WHERE o.status = 'delivered' AND COALESCE(o.cash_decided_at, o.delivered_at) >= now() - ($1 || ' days')::interval ${extra}
+          ORDER BY COALESCE(o.cash_decided_at, o.delivered_at) DESC LIMIT 1000`, params);
+      res.json({ days, rows: r.rows.map((o) => ({ ...o, total: Number(o.total) })) });
+    } catch (e) {
+      console.error('cash/collections failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر تحميل التحصيلات.' });
+    }
+  });
+
   // ---------- per-order collection (the collector decides: received / not received) ----------
 
   // Delivered orders for couriers this person collects from (admin sees all). Grouped client-side.

@@ -422,6 +422,7 @@ function cashLoad(){
       apiCall("GET","/cash/pending").then(function(r){CASH.pending=r}),
       apiCall("GET","/cash/overview").then(function(r){CASH.overview=r})
     ];
+    jobs.push(apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[]}).catch(function(){CC.rows=[]}));
     jobs.push(apiCall("GET","/earnings/summary").then(function(r){ERN.sum=r}).catch(function(){ERN.sum={couriers:[],payouts:[],total_owed:0}}));
     if(ROLE==="finance")jobs.push(apiCall("GET","/cash/orders").then(function(r){CASH.orders=(r&&r.orders)||[]}));
     else CASH.orders=[];
@@ -454,6 +455,48 @@ function earnSumCard(){
   var pays=(s.payouts||[]).slice(0,8).map(function(p){return '<div class="mute" style="padding:3px 0">'+dt(p.paid_at)+' · '+esc(p.courier_name)+' · '+p.amount+' ج.م ('+p.orders_count+' أوردر)'+(p.method==="netted"?' · اتخصم من العهدة (سلّم '+Number(p.cash_handed||0)+' ج.م)':' · كاش')+(p.paid_by_name?' · '+esc(p.paid_by_name):'')+'</div>'}).join('');
   return '<h1 style="font-size:17px">🛵 أجور المناديب (مستحق: '+s.total_owed+' ج.م)</h1>'+rows+(pays?'<div class="card"><b>آخر الدفعات</b>'+pays+'</div>':'');
 }
+/* ---------- inquiry: what was collected from the couriers (admin audits finance; finance sees the same list) ---------- */
+var CC={days:30,courier:"",st:"received",rows:null};
+function ccLoad(){
+  apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[];cashV()}).catch(function(){});
+}
+document.addEventListener("change",function(e){
+  if(e.target&&e.target.id==="ccDays"){CC.days=Number(e.target.value);CC.rows=null;cashV();ccLoad()}
+  if(e.target&&e.target.id==="ccCourier"){CC.courier=e.target.value;CC.rows=null;cashV();ccLoad()}
+});
+function ccCard(){
+  var rows=CC.rows;
+  var inp='padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;min-width:0';
+  var cou=(CASH.overview&&CASH.overview.couriers)||[];
+  var shown=(rows||[]).filter(function(o){return CC.st==="all"||o.cash_status===CC.st});
+  var money2=function(x){return Math.round(x*100)/100};
+  var sum=function(a){return money2(a.reduce(function(x,o){return x+Number(o.total)},0))};
+  var byC={},byF={};
+  shown.forEach(function(o){
+    (byC[o.courier_id]=byC[o.courier_id]||{n:o.courier_name,t:0,c:0});byC[o.courier_id].t+=Number(o.total);byC[o.courier_id].c++;
+    if(o.collector_name){(byF[o.collector_id]=byF[o.collector_id]||{n:o.collector_name,t:0,c:0});byF[o.collector_id].t+=Number(o.total);byF[o.collector_id].c++}
+  });
+  var ST=[["received","✅ اتحصّل"],["not_received","❌ ما اتسلمش"],["pending","⏳ لم يُحسم"],["all","الكل"]];
+  var DAYS=[[1,"النهارده"],[7,"آخر 7 أيام"],[30,"آخر 30 يوم"],[90,"آخر 90 يوم"],[365,"آخر سنة"]];
+  var h='<div class="card"><b>🔎 استعلام عن التحصيل من الدليفرية</b>'+
+    '<p class="mute" style="margin:4px 0 8px">كشف للمراجعة بس: مين حصّل، من أنهي دليفري، وإمتى.</p>'+
+    '<div style="display:flex;gap:8px;margin-bottom:8px"><select id="ccDays" style="flex:1;'+inp+'">'+DAYS.map(function(d){return '<option value="'+d[0]+'"'+(CC.days===d[0]?' selected':'')+'>'+d[1]+'</option>'}).join("")+'</select>'+
+    '<select id="ccCourier" style="flex:1;'+inp+'"><option value="">كل الدليفرية</option>'+cou.map(function(c){return '<option value="'+c.id+'"'+(String(CC.courier)===String(c.id)?' selected':'')+'>'+esc(c.name)+'</option>'}).join("")+'</select></div>'+
+    '<div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:6px">'+ST.map(function(x){var on=CC.st===x[0];return '<button type="button" class="chip" data-ccst="'+x[0]+'" style="flex:0 0 auto;'+(on?'background:var(--g);color:#fff':'')+'">'+x[1]+'</button>'}).join("")+
+    '<button type="button" class="chip" id="ccRefresh" style="flex:0 0 auto">🔄 تحديث</button></div>';
+  if(rows===null){return h+'<p class="mute">جارِ التحميل...</p></div>'}
+  h+='<div style="margin:8px 0;padding:8px;background:var(--g2);border-radius:10px"><b>'+sum(shown)+' ج.م</b> <span class="mute">عن '+shown.length+' أوردر</span></div>';
+  var cl=Object.keys(byC).map(function(k){return byC[k]}).sort(function(a,b){return b.t-a.t});
+  if(cl.length>1)h+='<div class="mute" style="margin-bottom:6px"><b>حسب الدليفري:</b> '+cl.map(function(c){return esc(c.n)+' '+money2(c.t)+' ج.م ('+c.c+')'}).join(' · ')+'</div>';
+  var fl=Object.keys(byF).map(function(k){return byF[k]}).sort(function(a,b){return b.t-a.t});
+  if(fl.length)h+='<div class="mute" style="margin-bottom:6px"><b>حسب اللي حصّل:</b> '+fl.map(function(c){return esc(c.n)+' '+money2(c.t)+' ج.م ('+c.c+')'}).join(' · ')+'</div>';
+  h+=shown.length?shown.slice(0,150).map(function(o){
+    var badge=o.cash_status==="received"?'':(o.cash_status==="not_received"?' <span style="color:var(--t)">❌ ما اتسلمش</span>':' <span class="mute">⏳ لم يُحسم</span>');
+    return '<div style="padding:7px 0;border-top:1px solid var(--line)"><b>#'+o.id+'</b> · '+esc(o.courier_name)+' · <b>'+o.total+' ج.م</b>'+badge+
+      '<br><span class="mute">'+(o.collector_name?'حصّله: '+esc(o.collector_name)+' · ':'')+dt(o.cash_decided_at||o.delivered_at)+'</span></div>'}).join(""):'<p class="mute" style="margin:6px 0 0">مفيش حاجة بالفلتر ده.</p>';
+  if(shown.length>150)h+='<p class="mute">بنعرض أحدث 150 أوردر. ضيّق الفترة أو اختار دليفري عشان تشوف الباقي.</p>';
+  return h+'</div>';
+}
 function cashOrderRow(o){
   var st=o.cash_status,badge=st==="received"?'<span style="color:#1b7a3d">✅ تم الاستلام</span>':st==="not_received"?'<span style="color:var(--t)">❌ ما اتسلمش</span>':'<span class="mute">⏳ لم يُحسم</span>';
   var chk=st==="received"?'':'<input type="checkbox" data-csel="'+o.id+'"'+(CASH.sel[o.id]?' checked':'')+' style="width:20px;height:20px;margin-left:10px">';
@@ -478,7 +521,8 @@ function cashV(){
     var ov=CASH.overview,pd=CASH.pending,os=CASH.orders;
     if(!ov||!pd||!os){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
     var html='<h1 style="font-size:19px">'+(ROLE==="admin"?'💵 توريدات المدير المالي':'💵 التحصيل من الدليفرية')+'</h1>'+earnSumCard();
-    if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية للمدير المالي فقط، حتى تقدر تراجعه. من هنا بس بتؤكد استلام التوريدات اللي المدير المالي بيسلّمها لك.</span></div>';
+    if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية بيعمله المدير المالي بس، وإنت بتراجعه من كشف الاستعلام تحت. وهنا بتؤكد استلام التوريدات اللي المدير المالي بيسلّمها لك.</span></div>';
+    html+=ccCard();
     if(ROLE==="finance"){
       html+='<div class="card"><b>🏦 المدير المالي — الرصيد في عهدتك: '+ov.my_custody+' ج.م</b>'+
         (ov.my_custody>0?'<br><button class="big" id="cashHandover" style="margin-top:10px">📤 توريد الرصيد للإدارة</button>':'')+'</div>';
@@ -1181,6 +1225,8 @@ document.addEventListener("change",function(e){
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
   if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
   if(t.id==="bdLate"){BDL=t.checked;bdV();return}
+  if(t.dataset&&t.dataset.ccst){CC.st=t.dataset.ccst;cashV();return}
+  if(t.id==="ccRefresh"){CC.rows=null;cashV();ccLoad();return}
   if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
   if(t.id==="actTog"){apiCall("PUT","/settings/activation",{required:t.checked}).then(function(r){if(r&&r.ok)ACT_REQ=r.required;else toast("تعذّر الحفظ");teamV()});return}
