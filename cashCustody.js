@@ -153,6 +153,20 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
         await client.query('ROLLBACK');
         return res.status(403).json({ error: 'finance_only', message: 'التحصيل من الدليفرية للمدير المالي فقط.' });
       }
+      if (ev.kind === 'finance_handover') {
+        const bal = await custodyBalance(client, ev.from_staff_id);
+        if (bal <= 0) {   // already received order by order: nothing left to confirm
+          await client.query('DELETE FROM cash_custody_events WHERE id=$1', [ev.id]);
+          await client.query('COMMIT');
+          return res.status(409).json({ error: 'nothing_left', message: 'العهدة دي اتسلّمت قبل كده، مفيش رصيد متبقي عند المدير المالي.' });
+        }
+        if (Number(ev.amount) > bal) ev.amount = bal;
+        await client.query('UPDATE cash_custody_events SET amount=$1 WHERE id=$2', [ev.amount, ev.id]);
+        await client.query(
+          `UPDATE orders SET handover_status='received', handover_decided_by=$1, handover_decided_at=now()
+            WHERE cash_status='received' AND handover_status<>'received' AND cash_decided_by=$2 AND cash_decided_at <= $3`,
+          [req.user.id, ev.from_staff_id, ev.reported_at]);
+      }
       await client.query(
         `UPDATE cash_custody_events SET status='confirmed', confirmed_by=$1, confirmed_at=now(), to_staff_id=$1 WHERE id=$2`,
         [req.user.id, ev.id]
@@ -196,10 +210,16 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
               COALESCE((SELECT SUM(total) FROM orders o WHERE o.delivery_staff_id=s.id AND o.status='delivered' AND o.cash_settled=false),0)::numeric AS owed
          FROM couriers s WHERE s.active=true ORDER BY s.name`
     );
-    res.json({
+    const out = {
       my_custody: myCustody,
       couriers: couriers.rows.map(c => ({ id: c.id, name: c.name, settlement_mode: c.settlement_mode, owed: round2(c.owed) }))
-    });
+    };
+    if (req.user.role === 'admin') {
+      const fin = await pool.query(`SELECT id, name FROM staff WHERE role='finance' AND active=true ORDER BY name`);
+      out.finance = [];
+      for (const f of fin.rows) out.finance.push({ id: f.id, name: f.name, custody: await custodyBalance(pool, f.id) });
+    }
+    res.json(out);
   });
 
 
@@ -223,6 +243,61 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
       console.error('cash/collections failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّر تحميل التحصيلات.' });
     }
+  });
+
+  // Orders whose cash the FINANCE manager collected from couriers and still holds (or that the admin recently decided on).
+  router.get('/cash/handover-orders', requireAuth('admin'), async (req, res) => {
+    try {
+      const r = await pool.query(
+        `SELECT o.id, o.total, o.handover_status, o.handover_decided_at, o.cash_decided_at,
+                f.id AS finance_id, f.name AS finance_name, c.name AS courier_name
+           FROM orders o JOIN staff f ON f.id = o.cash_decided_by LEFT JOIN couriers c ON c.id = o.delivery_staff_id
+          WHERE o.status = 'delivered' AND o.cash_status = 'received'
+            AND (o.handover_status IN ('pending','not_received') OR o.handover_decided_at > now() - interval '7 days')
+          ORDER BY o.cash_decided_at DESC NULLS LAST LIMIT 500`);
+      res.json({ orders: r.rows.map((o) => ({ ...o, total: Number(o.total) })) });
+    } catch (e) {
+      console.error('handover-orders failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر تحميل العهدة.' });
+    }
+  });
+
+  // The admin marks specific orders received / not received from the finance manager. "received" moves the money out of the finance
+  // manager's custody (one confirmed ledger row per finance manager); "not_received" just flags it, the money stays in his custody.
+  router.patch('/cash/handover/decide', requireAuth('admin'), async (req, res) => {
+    const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids.map(Number).filter(Number.isInteger) : [];
+    const status = req.body.status;
+    if (!ids.length || !['received', 'not_received'].includes(status)) {
+      return res.status(400).json({ error: 'invalid', message: 'بيانات غير صحيحة.' });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await client.query(
+        `UPDATE orders SET handover_status=$2, handover_decided_by=$3, handover_decided_at=now()
+          WHERE id = ANY($1::int[]) AND status='delivered' AND cash_status='received' AND handover_status <> 'received'
+            AND cash_decided_by IS NOT NULL
+          RETURNING id, total, cash_decided_by`, [ids, status, req.user.id]);
+      if (status === 'received' && r.rows.length) {
+        const by = {};
+        r.rows.forEach((o) => {
+          const g = (by[o.cash_decided_by] = by[o.cash_decided_by] || { amt: 0, ids: [] });
+          g.amt += Number(o.total); g.ids.push(o.id);
+        });
+        for (const fid of Object.keys(by)) {
+          await client.query(
+            `INSERT INTO cash_custody_events (kind, from_staff_id, to_staff_id, amount, order_ids, status, confirmed_by, confirmed_at)
+             VALUES ('finance_handover',$1,$2,$3,$4,'confirmed',$2,now())`,
+            [Number(fid), req.user.id, round2(by[fid].amt), by[fid].ids]);
+        }
+      }
+      await client.query('COMMIT');
+      res.json({ ok: true, updated: r.rows.length });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('handover decide failed', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' });
+    } finally { client.release(); }
   });
 
   // ---------- per-order collection (the collector decides: received / not received) ----------
