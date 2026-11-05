@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v23";
+var APP_VER="v24";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -445,8 +445,8 @@ function cashLoad(){
     jobs.push(apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[]}).catch(function(){CC.rows=[]}));
     jobs.push(apiCall("GET","/earnings/summary").then(function(r){ERN.sum=r}).catch(function(){ERN.sum={couriers:[],payouts:[],total_owed:0}}));
     if(ROLE==="finance")jobs.push(J("/cash/orders",function(r){CASH.orders=r.orders||[]}));
+    else CASH.orders=[];   // the admin has no per-order list of his own (the screen waits for this to be an array)
     if(ROLE==="admin")jobs.push(apiCall("GET","/cash/handover-orders").then(function(r){HO.rows=(r&&r.orders)?r.orders:[]}).catch(function(){HO.rows=[]}));
-    else CASH.orders=CASH.orders||[];
     Promise.all(jobs).then(cashV).catch(function(e){CASH.err=(e&&e.name==="AbortError")?"السيرفر اتأخر في الرد (أكتر من 25 ثانية)":((e&&e.message)||"تعذّر التحميل");cashV()});
   }
 }
