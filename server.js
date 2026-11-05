@@ -6,6 +6,20 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const webpush = require('web-push');
+
+// Express 4 does not catch errors thrown inside async routes: the request just hangs forever and the app shows "loading...".
+// This makes a failed async route reach the error handler at the bottom of this file, which answers with a JSON 500.
+try {
+  const ExpressLayer = require('express/lib/router/layer');
+  ExpressLayer.prototype.handle_request = function handle(req, res, next) {
+    const fn = this.handle;
+    if (fn.length > 3) return next();   // error-handling middleware is called through handle_error
+    try {
+      const ret = fn(req, res, next);
+      if (ret && typeof ret.catch === 'function') ret.catch(next);
+    } catch (err) { next(err); }
+  };
+} catch (e) { console.warn('async error handling patch skipped:', e.message); }
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -82,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v22 · 2026-11-05';
+const SERVER_VERSION = 'v23 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {
@@ -1109,6 +1123,14 @@ async function checkInactiveCustomers() {
 }
 setInterval(checkInactiveCustomers, 6 * 60 * 60 * 1000);
 checkInactiveCustomers();
+
+// Last stop for any route error: always answer with JSON (the admin also gets the technical reason, which helps spot a missing SQL phase).
+app.use((err, req, res, next) => {
+  console.error('route error', req.method, req.originalUrl, err && err.message);
+  if (res.headersSent) return next(err);
+  const admin = req.user && req.user.role === 'admin';
+  res.status(500).json({ error: 'server_error', message: 'حصلت مشكلة في السيرفر.', ...(admin ? { detail: String((err && err.message) || err).slice(0, 300) } : {}) });
+});
 
 const PORT = process.env.PORT || 3000;
 setInterval(() => prepAssign.kick(), 30 * 1000);

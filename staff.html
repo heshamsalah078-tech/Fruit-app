@@ -140,12 +140,15 @@ function apiCall(method,path,body){
   var opt={method:method,headers:{"Content-Type":"application/json"}};
   if(TOK)opt.headers.Authorization="Bearer "+TOK;
   if(body)opt.body=JSON.stringify(body);
+  var tm=null;
+  if(typeof AbortController!=="undefined"){var ctl=new AbortController();opt.signal=ctl.signal;tm=setTimeout(function(){ctl.abort()},25000)}   // never wait forever
   return fetch(API+path,opt).then(function(r){
+    if(tm)clearTimeout(tm);
     if(r.status===401&&TOK){logout();return{}}   // an expired session logs out; a wrong password on the login form just shows its message
     return r.json().catch(function(){return{}})
-  });
+  },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v22";
+var APP_VER="v23";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -430,16 +433,21 @@ function cashLoad(){
     apiCall("GET","/cash/my-status").then(function(r){CASH.mine=r;cashV()}).catch(function(){});
     apiCall("GET","/courier/earnings").then(function(r){ERN.mine=r;cashV()}).catch(function(){});
   }else if(ROLE==="finance"||ROLE==="admin"){
+    CASH.err="";
+    // a critical answer must be a real answer: an error or an empty body is shown to the user, never silently swallowed
+    function J(path,set){return apiCall("GET",path).then(function(r){
+      if(!r||r.error||(!Array.isArray(r)&&!Object.keys(r).length))throw new Error(r&&r.message?(r.message+(r.detail?" — "+r.detail:"")):"السيرفر ما ردّش ردّ مفهوم");
+      set(r)})}
     var jobs=[
-      apiCall("GET","/cash/pending").then(function(r){CASH.pending=r}),
-      apiCall("GET","/cash/overview").then(function(r){CASH.overview=r})
+      J("/cash/pending",function(r){CASH.pending=r}),
+      J("/cash/overview",function(r){CASH.overview=r})
     ];
     jobs.push(apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[]}).catch(function(){CC.rows=[]}));
     jobs.push(apiCall("GET","/earnings/summary").then(function(r){ERN.sum=r}).catch(function(){ERN.sum={couriers:[],payouts:[],total_owed:0}}));
-    if(ROLE==="finance")jobs.push(apiCall("GET","/cash/orders").then(function(r){CASH.orders=(r&&r.orders)||[]}));
+    if(ROLE==="finance")jobs.push(J("/cash/orders",function(r){CASH.orders=r.orders||[]}));
     if(ROLE==="admin")jobs.push(apiCall("GET","/cash/handover-orders").then(function(r){HO.rows=(r&&r.orders)?r.orders:[]}).catch(function(){HO.rows=[]}));
-    else CASH.orders=[];
-    Promise.all(jobs).then(cashV).catch(function(){});
+    else CASH.orders=CASH.orders||[];
+    Promise.all(jobs).then(cashV).catch(function(e){CASH.err=(e&&e.name==="AbortError")?"السيرفر اتأخر في الرد (أكتر من 25 ثانية)":((e&&e.message)||"تعذّر التحميل");cashV()});
   }
 }
 
@@ -561,6 +569,7 @@ function cashV(){
     el.innerHTML=html;
   }else{
     var ov=CASH.overview,pd=CASH.pending,os=CASH.orders;
+    if(CASH.err){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><div class="card"><b>⚠️ تعذّر تحميل البيانات</b><p class="mute" style="margin:6px 0">'+esc(CASH.err)+'</p><p class="mute" style="font-size:12px">لو الرسالة فيها "relation" أو "column" أو "does not exist"، يبقى في ملف SQL لسه ما اتشغّلش في Neon (phase29 ثم phase30).</p><button class="big" id="cashRetry">🔄 إعادة المحاولة</button></div>';return}
     if(!ov||!pd||!os){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
     var html='<h1 style="font-size:19px">'+(ROLE==="admin"?'💵 توريدات المدير المالي':'💵 التحصيل من الدليفرية')+'</h1>'+earnSumCard();
     if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية بيعمله المدير المالي بس، وإنت بتراجعه من كشف الاستعلام تحت. وهنا بتؤكد استلام التوريدات اللي المدير المالي بيسلّمها لك.</span></div>';
@@ -1266,6 +1275,7 @@ document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|D
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
+  if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
   if(t.dataset&&t.dataset.hsel){HO.sel[t.dataset.hsel]=t.checked;cashV();return}
   if(t.dataset&&t.dataset.hgall){
     var gid=Number(t.dataset.hgall),on=t.checked;

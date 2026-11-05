@@ -1,4 +1,4 @@
-const CACHE = 'fresh-app-v23';
+const CACHE = 'fresh-app-v24';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => {});
 self.addEventListener('fetch', e => {
