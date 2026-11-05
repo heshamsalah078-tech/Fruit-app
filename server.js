@@ -80,6 +80,24 @@ const upload = multer({
 });
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
+
+// Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
+const SERVER_VERSION = 'v22 · 2026-11-05';
+app.get('/version', async (req, res) => {
+  const out = { server: SERVER_VERSION, missing: [] };
+  try {
+    const c = (await pool.query(`SELECT
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='zone_fee') AS p24,
+        to_regclass('public.offers') IS NOT NULL AS p25,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='offers' AND column_name='gift_product_id') AS p26,
+        to_regclass('public.offer_skips') IS NOT NULL AS p27,
+        to_regclass('public.offer_snapshots') IS NOT NULL AS p28,
+        to_regclass('public.couriers') IS NOT NULL AS p29,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='handover_status') AS p30`)).rows[0];
+    ['p24', 'p25', 'p26', 'p27', 'p28', 'p29', 'p30'].forEach((k) => { if (!c[k]) out.missing.push('phase' + k.slice(1)); });
+  } catch (e) { out.db_error = e.message; }
+  res.json(out);
+});
 // Express treats /x and /x/ as the same route, so check the real URL to avoid a redirect loop
 function pageRoute(base, file) {
   return (req, res) => {
