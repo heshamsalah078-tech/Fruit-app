@@ -245,17 +245,25 @@ function init({ pool, requireAuth, express, issueActivation, activationRequired,
     }
   });
 
-  // Orders whose cash the FINANCE manager collected from couriers and still holds (or that the admin recently decided on).
+  // The admin's single list: every delivered order with where its cash is now:
+  //   still with the courier / NOT collected by finance  |  collected by finance, not yet received by the admin  |  received by the admin.
+  // Orders still sitting with the finance manager are always listed (whatever their age); the rest follow the chosen period.
   router.get('/cash/handover-orders', requireAuth('admin'), async (req, res) => {
     try {
+      const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+      const params = [String(days)];
+      let extra = '';
+      const cid = Number(req.query.courier_id);
+      if (Number.isInteger(cid) && cid > 0) { params.push(cid); extra = ` AND o.delivery_staff_id = $${params.length}`; }
       const r = await pool.query(
-        `SELECT o.id, o.total, o.handover_status, o.handover_decided_at, o.cash_decided_at,
-                f.id AS finance_id, f.name AS finance_name, c.name AS courier_name
-           FROM orders o JOIN staff f ON f.id = o.cash_decided_by LEFT JOIN couriers c ON c.id = o.delivery_staff_id
-          WHERE o.status = 'delivered' AND o.cash_status = 'received'
-            AND (o.handover_status IN ('pending','not_received') OR o.handover_decided_at > now() - interval '7 days')
-          ORDER BY o.cash_decided_at DESC NULLS LAST LIMIT 500`);
-      res.json({ orders: r.rows.map((o) => ({ ...o, total: Number(o.total) })) });
+        `SELECT o.id, o.total, o.cash_status, o.cash_decided_at, o.delivered_at, o.handover_status, o.handover_decided_at,
+                f.id AS finance_id, f.name AS finance_name, c.id AS courier_id, c.name AS courier_name
+           FROM orders o LEFT JOIN staff f ON f.id = o.cash_decided_by LEFT JOIN couriers c ON c.id = o.delivery_staff_id
+          WHERE o.status = 'delivered' AND o.delivery_staff_id IS NOT NULL ${extra}
+            AND ((o.cash_status = 'received' AND o.handover_status <> 'received')
+                 OR COALESCE(o.handover_decided_at, o.cash_decided_at, o.delivered_at) >= now() - ($1 || ' days')::interval)
+          ORDER BY COALESCE(o.cash_decided_at, o.delivered_at) DESC NULLS LAST LIMIT 800`, params);
+      res.json({ days, orders: r.rows.map((o) => ({ ...o, total: Number(o.total) })) });
     } catch (e) {
       console.error('handover-orders failed', e.message);
       res.status(500).json({ error: 'failed', message: 'تعذّر تحميل العهدة.' });
