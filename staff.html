@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v24";
+var APP_VER="v25";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -442,11 +442,11 @@ function cashLoad(){
       J("/cash/pending",function(r){CASH.pending=r}),
       J("/cash/overview",function(r){CASH.overview=r})
     ];
-    jobs.push(apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[]}).catch(function(){CC.rows=[]}));
+    if(ROLE==="finance")jobs.push(apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[]}).catch(function(){CC.rows=[]}));
     jobs.push(apiCall("GET","/earnings/summary").then(function(r){ERN.sum=r}).catch(function(){ERN.sum={couriers:[],payouts:[],total_owed:0}}));
     if(ROLE==="finance")jobs.push(J("/cash/orders",function(r){CASH.orders=r.orders||[]}));
     else CASH.orders=[];   // the admin has no per-order list of his own (the screen waits for this to be an array)
-    if(ROLE==="admin")jobs.push(apiCall("GET","/cash/handover-orders").then(function(r){HO.rows=(r&&r.orders)?r.orders:[]}).catch(function(){HO.rows=[]}));
+    if(ROLE==="admin")jobs.push(apiCall("GET","/cash/handover-orders?days="+HO.days+(HO.courier?"&courier_id="+HO.courier:"")).then(function(r){HO.rows=(r&&r.orders)?r.orders:[]}).catch(function(){HO.rows=[]}));
     Promise.all(jobs).then(cashV).catch(function(e){CASH.err=(e&&e.name==="AbortError")?"السيرفر اتأخر في الرد (أكتر من 25 ثانية)":((e&&e.message)||"تعذّر التحميل");cashV()});
   }
 }
@@ -476,31 +476,56 @@ function earnSumCard(){
   var pays=(s.payouts||[]).slice(0,8).map(function(p){return '<div class="mute" style="padding:3px 0">'+dt(p.paid_at)+' · '+esc(p.courier_name)+' · '+p.amount+' ج.م ('+p.orders_count+' أوردر)'+(p.method==="netted"?' · اتخصم من العهدة (سلّم '+Number(p.cash_handed||0)+' ج.م)':' · كاش')+(p.paid_by_name?' · '+esc(p.paid_by_name):'')+'</div>'}).join('');
   return '<h1 style="font-size:17px">🛵 أجور المناديب (مستحق: '+s.total_owed+' ج.م)</h1>'+rows+(pays?'<div class="card"><b>آخر الدفعات</b>'+pays+'</div>':'');
 }
-/* ---------- admin: receive the finance manager's custody, order by order (all, or only some) ---------- */
-var HO={rows:null,sel:{}};
+/* ---------- admin: ONE list of every delivered order and where its cash is, with 4 views, and receiving from the finance manager ---------- */
+var HO={rows:null,sel:{},days:30,courier:"",view:"pending"};
+var HVIEW=[["pending","⏳ حصّلها المدير المالي ولسه ما استلمتهاش"],["received","✅ حصّلها المدير المالي واستلمتها أنا"],["collected","🏦 حصّلها المدير المالي (الكل)"],["not_collected","⛔ ما حصّلهاش المدير المالي"]];
+function hoMatch(o){var c=o.cash_status==="received",r=o.handover_status==="received";return HO.view==="pending"?(c&&!r):HO.view==="received"?(c&&r):HO.view==="collected"?c:!c}
+function hoReceivable(o){return o.cash_status==="received"&&o.handover_status!=="received"}
+function hoLoad(){
+  HO.rows=null;
+  apiCall("GET","/cash/handover-orders?days="+HO.days+(HO.courier?"&courier_id="+HO.courier:"")).then(function(r){HO.rows=(r&&r.orders)?r.orders:[];cashV()}).catch(function(){HO.rows=[];cashV()});
+}
 function hoRow(o){
-  var st=o.handover_status,badge=st==="received"?'<span style="color:#1b7a3d">✅ تم الاستلام</span>':st==="not_received"?'<span style="color:var(--t)">❌ ما اتسلمش</span>':'<span class="mute">⏳ لم يُستلم</span>';
-  var chk=st==="received"?'':'<input type="checkbox" data-hsel="'+o.id+'"'+(HO.sel[o.id]?' checked':'')+' style="width:20px;height:20px;margin-left:10px">';
-  return '<div class="card row"><div>'+chk+'<b>أوردر #'+o.id+'</b> — '+o.total+' ج.م<br><span class="mute">'+esc(o.courier_name||"")+' · حصّله المدير المالي '+dt(o.cash_decided_at)+'</span></div><div>'+badge+'</div></div>';
+  var badge,c=o.cash_status==="received";
+  if(!c)badge=o.cash_status==="not_received"?'<span style="color:var(--t)">❌ المدير المالي علّمه ما اتسلمش</span>':'<span class="mute">⏳ لسه مع الدليفري</span>';
+  else if(o.handover_status==="received")badge='<span style="color:#1b7a3d">✅ استلمته</span>';
+  else if(o.handover_status==="not_received")badge='<span style="color:var(--t)">❌ علّمته ما اتسلمش</span>';
+  else badge='<span class="mute">⏳ في عهدة المدير المالي</span>';
+  var chk=hoReceivable(o)?'<input type="checkbox" data-hsel="'+o.id+'"'+(HO.sel[o.id]?' checked':'')+' style="width:20px;height:20px;margin-left:10px">':'';
+  var info=esc(o.courier_name||"")+(c&&o.finance_name?' · حصّله '+esc(o.finance_name)+' '+dt(o.cash_decided_at):' · اتسلّم '+dt(o.delivered_at))+(o.handover_status==="received"&&o.handover_decided_at?' · استلمته '+dt(o.handover_decided_at):'');
+  return '<div class="card row"><div>'+chk+'<b>أوردر #'+o.id+'</b> — '+o.total+' ج.م<br><span class="mute">'+info+'</span></div><div>'+badge+'</div></div>';
 }
 function hoCard(){
   var rows=HO.rows,ov=CASH.overview||{};
-  var h='<h1 style="font-size:17px;margin-top:6px">📥 استلام العهدة من المدير المالي</h1>';
+  var inp='padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;min-width:0';
+  var money2=function(x){return Math.round(x*100)/100};
+  var DAYS=[[1,"النهارده"],[7,"آخر 7 أيام"],[30,"آخر 30 يوم"],[90,"آخر 90 يوم"],[365,"آخر سنة"]];
+  var cou=ov.couriers||[],fin=ov.finance||[];
+  var h='<h1 style="font-size:17px;margin-top:6px">📥 العهدة والتحصيل</h1>';
+  if(fin.length)h+='<div class="card">'+fin.map(function(f){return '<div class="row"><span>🏦 '+esc(f.name)+'</span><b>'+f.custody+' ج.م <span class="mute" style="font-weight:400">في عهدته دلوقتي</span></b></div>'}).join("")+'</div>';
+  h+='<div class="card"><div style="display:flex;gap:8px;margin-bottom:8px"><select id="hoDays" style="flex:1;'+inp+'">'+DAYS.map(function(d){return '<option value="'+d[0]+'"'+(HO.days===d[0]?' selected':'')+'>'+d[1]+'</option>'}).join("")+'</select>'+
+    '<select id="hoCourier" style="flex:1;'+inp+'"><option value="">كل الدليفرية</option>'+cou.map(function(c){return '<option value="'+c.id+'"'+(String(HO.courier)===String(c.id)?' selected':'')+'>'+esc(c.name)+'</option>'}).join("")+'</select></div>'+
+    '<div style="display:flex;flex-direction:column;gap:6px">'+HVIEW.map(function(v){var on=HO.view===v[0];return '<button type="button" class="chip" data-hview="'+v[0]+'" style="text-align:right;'+(on?'background:var(--g);color:#fff':'')+'">'+v[1]+'</button>'}).join("")+'</div></div>';
   if(rows===null)return h+'<p class="mute">جارِ التحميل...</p>';
-  var fin=ov.finance||[];
-  if(fin.length)h+='<div class="card">'+fin.map(function(f){return '<div class="row"><span>🏦 '+esc(f.name)+'</span><b>'+f.custody+' ج.م <span class="mute" style="font-weight:400">في عهدته</span></b></div>'}).join("")+'</div>';
-  var selN=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).length;
-  h+='<div class="card"><b>علّم الأوردرات اللي استلمت فلوسها فعلاً ('+selN+' محدد)</b><p class="mute" style="margin:4px 0 8px">تقدر تستلم كلها (زرار "تحديد الكل") أو بعضها بس. اللي ما استلمتهوش علّمه "ما اتسلمش" وهيفضل في عهدة المدير المالي لحد ما تستلمه.</p>'+
-    '<button class="big" id="hoRecv"'+(selN?'':' disabled')+'>✅ تم الاستلام</button> <button class="chip" id="hoNot" style="color:var(--t)"'+(selN?'':' disabled')+'>❌ ما اتسلمش</button></div>';
-  var by={};rows.forEach(function(o){(by[o.finance_id]=by[o.finance_id]||{name:o.finance_name,rows:[]}).rows.push(o)});
-  var ids=Object.keys(by);
-  if(!ids.length)return h+'<p class="mute">مفيش أوردرات في عهدة المدير المالي دلوقتي.</p>';
-  ids.forEach(function(id){
-    var g=by[id],pend=g.rows.filter(function(o){return o.handover_status!=="received"});
-    var tot=Math.round(pend.reduce(function(a,o){return a+Number(o.total)},0)*100)/100;
+  var shown=rows.filter(hoMatch);
+  var tot=money2(shown.reduce(function(a,o){return a+Number(o.total)},0));
+  h+='<div style="margin:8px 0;padding:8px;background:var(--g2);border-radius:10px"><b>'+tot+' ج.م</b> <span class="mute">عن '+shown.length+' أوردر</span></div>';
+  var rec=shown.filter(hoReceivable),selN=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).length;
+  if(rec.length){
+    var recTot=money2(rec.reduce(function(a,o){return a+Number(o.total)},0));
+    h+='<div class="card"><button class="big" id="hoAll">✅ تم الاستلام: كل الأوردرات دي اتحصّلت ('+rec.length+' · '+recTot+' ج.م)</button>'+
+      '<p class="mute" style="margin:8px 0 4px">أو علّم الأوردرات اللي استلمت فلوسها بس ('+selN+' محدد):</p>'+
+      '<button class="chip" id="hoRecv"'+(selN?'':' disabled')+'>✅ استلمت المحدد</button> <button class="chip" id="hoNot" style="color:var(--t)"'+(selN?'':' disabled')+'>❌ ما اتسلمش</button></div>';
+  }
+  if(!shown.length)return h+'<p class="mute">مفيش أوردرات بالاختيار ده.</p>';
+  var key=HO.view==="not_collected"?"courier":"finance",by={};
+  shown.forEach(function(o){var id=key==="courier"?o.courier_id:o.finance_id,nm=key==="courier"?o.courier_name:o.finance_name;(by[id]=by[id]||{name:nm,rows:[]}).rows.push(o)});
+  Object.keys(by).forEach(function(id){
+    var g=by[id],pend=g.rows.filter(hoReceivable);
+    var gt=money2(g.rows.reduce(function(a,o){return a+Number(o.total)},0));
     var allOn=pend.length&&pend.every(function(o){return HO.sel[o.id]});
-    h+='<h2 style="font-size:15px;margin:14px 0 6px">'+esc(g.name)+' — لسه معاه: '+tot+' ج.م ('+pend.length+' أوردر)</h2>'+
-      (pend.length?'<label style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><input type="checkbox" data-hgall="'+id+'"'+(allOn?' checked':'')+' style="width:20px;height:20px"> تحديد كل أوردرات '+esc(g.name)+'</label>':'')+
+    h+='<h2 style="font-size:15px;margin:14px 0 6px">'+(key==="courier"?'🛵 ':'🏦 ')+esc(g.name||"—")+' — '+gt+' ج.م ('+g.rows.length+' أوردر)</h2>'+
+      (pend.length?'<label style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><input type="checkbox" data-hgall="'+id+'"'+(allOn?' checked':'')+' style="width:20px;height:20px"> تحديد كل أوردرات '+esc(g.name||"")+'</label>':'')+
       g.rows.map(hoRow).join('');
   });
   return h;
@@ -511,6 +536,8 @@ function ccLoad(){
   apiCall("GET","/cash/collections?days="+CC.days+(CC.courier?"&courier_id="+CC.courier:"")).then(function(r){CC.rows=(r&&r.rows)?r.rows:[];cashV()}).catch(function(){});
 }
 document.addEventListener("change",function(e){
+  if(e.target&&e.target.id==="hoDays"){HO.days=Number(e.target.value);HO.sel={};cashV();hoLoad()}
+  if(e.target&&e.target.id==="hoCourier"){HO.courier=e.target.value;HO.sel={};cashV();hoLoad()}
   if(e.target&&e.target.id==="ccDays"){CC.days=Number(e.target.value);CC.rows=null;cashV();ccLoad()}
   if(e.target&&e.target.id==="ccCourier"){CC.courier=e.target.value;CC.rows=null;cashV();ccLoad()}
 });
@@ -572,8 +599,8 @@ function cashV(){
     if(CASH.err){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><div class="card"><b>⚠️ تعذّر تحميل البيانات</b><p class="mute" style="margin:6px 0">'+esc(CASH.err)+'</p><p class="mute" style="font-size:12px">لو الرسالة فيها "relation" أو "column" أو "does not exist"، يبقى في ملف SQL لسه ما اتشغّلش في Neon (phase29 ثم phase30).</p><button class="big" id="cashRetry">🔄 إعادة المحاولة</button></div>';return}
     if(!ov||!pd||!os){el.innerHTML='<h1 style="font-size:19px">💵 التحصيل</h1><p class="mute">جارِ التحميل...</p>';return}
     var html='<h1 style="font-size:19px">'+(ROLE==="admin"?'💵 توريدات المدير المالي':'💵 التحصيل من الدليفرية')+'</h1>'+earnSumCard();
-    if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية بيعمله المدير المالي بس، وإنت بتراجعه من كشف الاستعلام تحت. وهنا بتؤكد استلام التوريدات اللي المدير المالي بيسلّمها لك.</span></div>';
-    html+=ccCard();
+    if(ROLE==="admin")html+='<div class="card"><span class="mute">🔒 التحصيل من الدليفرية بيعمله المدير المالي بس. من هنا بتستعلم عن كل أوردر وبتستلم منه الفلوس.</span></div>';
+    if(ROLE!=="admin")html+=ccCard();
     if(ROLE==="finance"){
       html+='<div class="card"><b>🏦 المدير المالي — الرصيد في عهدتك: '+ov.my_custody+' ج.م</b>'+
         (ov.my_custody>0?'<br><button class="big" id="cashHandover" style="margin-top:10px">📤 توريد الرصيد للإدارة</button>':'')+'</div>';
@@ -1276,10 +1303,20 @@ document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
   if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
+  if(t.dataset&&t.dataset.hview){HO.view=t.dataset.hview;HO.sel={};cashV();return}
+  if(t.id==="hoAll"){
+    var allIds=(HO.rows||[]).filter(hoMatch).filter(hoReceivable).map(function(o){return o.id});
+    if(!allIds.length)return;
+    if(!confirm("تأكيد إنك استلمت فلوس كل الأوردرات دي ("+allIds.length+" أوردر) من المدير المالي؟"))return;
+    apiCall("PATCH","/cash/handover/decide",{order_ids:allIds,status:"received"}).then(function(r){
+      if(r&&r.ok){HO.sel={};toast("تم تسجيل استلام "+r.updated+" أوردر");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
+    });
+    return;
+  }
   if(t.dataset&&t.dataset.hsel){HO.sel[t.dataset.hsel]=t.checked;cashV();return}
   if(t.dataset&&t.dataset.hgall){
     var gid=Number(t.dataset.hgall),on=t.checked;
-    (HO.rows||[]).forEach(function(o){if(o.finance_id===gid&&o.handover_status!=="received")HO.sel[o.id]=on});
+    (HO.rows||[]).filter(hoMatch).forEach(function(o){if(o.finance_id===gid&&hoReceivable(o))HO.sel[o.id]=on});
     cashV();return;
   }
   if(t.id==="hoRecv"||t.id==="hoNot"){
