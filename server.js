@@ -96,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v25 · 2026-11-05';
+const SERVER_VERSION = 'v26 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {

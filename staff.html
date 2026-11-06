@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v25";
+var APP_VER="v26";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -1302,37 +1302,14 @@ document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|D
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
-  if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
-  if(t.dataset&&t.dataset.hview){HO.view=t.dataset.hview;HO.sel={};cashV();return}
-  if(t.id==="hoAll"){
-    var allIds=(HO.rows||[]).filter(hoMatch).filter(hoReceivable).map(function(o){return o.id});
-    if(!allIds.length)return;
-    if(!confirm("تأكيد إنك استلمت فلوس كل الأوردرات دي ("+allIds.length+" أوردر) من المدير المالي؟"))return;
-    apiCall("PATCH","/cash/handover/decide",{order_ids:allIds,status:"received"}).then(function(r){
-      if(r&&r.ok){HO.sel={};toast("تم تسجيل استلام "+r.updated+" أوردر");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
-    });
-    return;
-  }
   if(t.dataset&&t.dataset.hsel){HO.sel[t.dataset.hsel]=t.checked;cashV();return}
   if(t.dataset&&t.dataset.hgall){
     var gid=Number(t.dataset.hgall),on=t.checked;
     (HO.rows||[]).filter(hoMatch).forEach(function(o){if(o.finance_id===gid&&hoReceivable(o))HO.sel[o.id]=on});
     cashV();return;
   }
-  if(t.id==="hoRecv"||t.id==="hoNot"){
-    var hids=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).map(Number);
-    if(!hids.length)return;
-    var recv=t.id==="hoRecv";
-    if(!confirm(recv?"تأكيد إنك استلمت فلوس "+hids.length+" أوردر من المدير المالي؟":"تعليم "+hids.length+" أوردر إنهم ما اتسلموش؟"))return;
-    apiCall("PATCH","/cash/handover/decide",{order_ids:hids,status:recv?"received":"not_received"}).then(function(r){
-      if(r&&r.ok){HO.sel={};toast(recv?"تم تسجيل الاستلام":"تم التعليم");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
-    });
-    return;
-  }
   if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
   if(t.id==="bdLate"){BDL=t.checked;bdV();return}
-  if(t.dataset&&t.dataset.ccst){CC.st=t.dataset.ccst;cashV();return}
-  if(t.id==="ccRefresh"){CC.rows=null;cashV();ccLoad();return}
   if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
   if(t.id==="actTog"){apiCall("PUT","/settings/activation",{required:t.checked}).then(function(r){if(r&&r.ok)ACT_REQ=r.required;else toast("تعذّر الحفظ");teamV()});return}
@@ -1349,6 +1326,29 @@ document.addEventListener("change",function(e){
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.dataset.t){go(t.dataset.t);return}
+  if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
+  if(t.dataset&&t.dataset.hview){HO.view=t.dataset.hview;HO.sel={};cashV();return}
+  if(t.id==="hoAll"){
+    var allIds=(HO.rows||[]).filter(hoMatch).filter(hoReceivable).map(function(o){return o.id});
+    if(!allIds.length)return;
+    if(!confirm("تأكيد إنك استلمت فلوس كل الأوردرات دي ("+allIds.length+" أوردر) من المدير المالي؟"))return;
+    apiCall("PATCH","/cash/handover/decide",{order_ids:allIds,status:"received"}).then(function(r){
+      if(r&&r.ok){HO.sel={};toast("تم تسجيل استلام "+r.updated+" أوردر");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
+    });
+    return;
+  }
+  if(t.id==="hoRecv"||t.id==="hoNot"){
+    var hids=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).map(Number);
+    if(!hids.length)return;
+    var recv=t.id==="hoRecv";
+    if(!confirm(recv?"تأكيد إنك استلمت فلوس "+hids.length+" أوردر من المدير المالي؟":"تعليم "+hids.length+" أوردر إنهم ما اتسلموش؟"))return;
+    apiCall("PATCH","/cash/handover/decide",{order_ids:hids,status:recv?"received":"not_received"}).then(function(r){
+      if(r&&r.ok){HO.sel={};toast(recv?"تم تسجيل الاستلام":"تم التعليم");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
+    });
+    return;
+  }
+  if(t.dataset&&t.dataset.ccst){CC.st=t.dataset.ccst;cashV();return}
+  if(t.id==="ccRefresh"){CC.rows=null;cashV();ccLoad();return}
 
   if(t.id==="aGo"){
     $("aErr").style.color="";
