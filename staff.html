@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v26";
+var APP_VER="v27";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -513,9 +513,12 @@ function hoCard(){
   var rec=shown.filter(hoReceivable),selN=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).length;
   if(rec.length){
     var recTot=money2(rec.reduce(function(a,o){return a+Number(o.total)},0));
-    h+='<div class="card"><button class="big" id="hoAll">✅ تم الاستلام: كل الأوردرات دي اتحصّلت ('+rec.length+' · '+recTot+' ج.م)</button>'+
-      '<p class="mute" style="margin:8px 0 4px">أو علّم الأوردرات اللي استلمت فلوسها بس ('+selN+' محدد):</p>'+
-      '<button class="chip" id="hoRecv"'+(selN?'':' disabled')+'>✅ استلمت المحدد</button> <button class="chip" id="hoNot" style="color:var(--t)"'+(selN?'':' disabled')+'>❌ ما اتسلمش</button></div>';
+    var selRows=rec.filter(function(o){return HO.sel[o.id]}),selTot=money2(selRows.reduce(function(a,o){return a+Number(o.total)},0));
+    var allSel=selRows.length===rec.length;
+    h+='<div class="card"><label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" data-hall="1"'+(allSel?' checked':'')+' style="width:20px;height:20px"> تحديد الكل ('+rec.length+' أوردر · '+recTot+' ج.م)</label>'+
+      '<button class="big" id="hoRecv"'+(selN?'':' disabled')+'>✅ تم الاستلام'+(selN?' ('+selRows.length+' أوردر · '+selTot+' ج.م)':'')+'</button>'+
+      '<p class="mute" style="margin:8px 0 0">علّم الأوردرات اللي استلمت فلوسها من المدير المالي، واضغط "تم الاستلام". فلوسها بتتشال من عهدته.</p>'+
+      '<button class="chip" id="hoNot" style="color:var(--t);margin-top:8px"'+(selN?'':' disabled')+'>❌ ما اتسلمش</button></div>';
   }
   if(!shown.length)return h+'<p class="mute">مفيش أوردرات بالاختيار ده.</p>';
   var key=HO.view==="not_collected"?"courier":"finance",by={};
@@ -660,12 +663,12 @@ function crV(){
       '<select data-crmode="'+c.id+'">'+['per_order','daily','weekly','suspended'].map(function(k){return '<option value="'+k+'"'+(c.settlement_mode===k?' selected':'')+'>'+({per_order:"أوردر بأوردر",daily:"يوم بيوم",weekly:"أسبوع بأسبوع",suspended:"إيقاف التعامل"})[k]+'</option>'}).join('')+'</select>'+
       '<label class="mute" style="display:block;margin-top:8px">المحصِّل (المدير المالي)</label>'+crColSel(c.id,c.collector_id,CR.collectors)+
       '<button class="chip" style="margin-top:10px" data-crrs="'+c.id+'">🔑 إعادة تعيين كلمة السر</button>'+
-      (c.has_history
-        ?'<button class="chip" style="margin-top:10px;color:var(--t)" data-crtoggle="'+c.id+':'+(c.active?'0':'1')+'">'+(c.active?'⏸ إيقاف الدليفري':'▶️ إعادة تفعيل')+'</button><p class="mute" style="font-size:12px">لا يمكن حذفه لأن له تاريخ تشغيل (يمكن إيقافه فقط).</p>'
+      (c.has_history||ROLE!=="admin"
+        ?'<button class="chip" style="margin-top:10px;color:var(--t)" data-crtoggle="'+c.id+':'+(c.active?'0':'1')+'">'+(c.active?'⏸ إيقاف الدليفري':'▶️ إعادة تفعيل')+'</button><p class="mute" style="font-size:12px">'+(ROLE==="admin"?'لا يمكن حذفه لأن له تاريخ تشغيل (يمكن إيقافه فقط).':'الإيقاف وإعادة التفعيل متاحين لك، أما الإضافة والحذف فللمدير.')+'</p>'
         :'<button class="chip" style="margin-top:10px;color:var(--t)" data-crdelete="'+c.id+'">🗑 حذف الدليفري</button>')+
       '</details></div>';
   }).join('')+'<p id="crNone" class="mute" style="display:none">مفيش نتائج بالبحث ده.</p>':'<p class="mute">لا يوجد دليفرية بعد.</p>';
-  html+='<button class="big" id="crShowAdd" style="margin:10px 0;display:'+(CRF.showAdd?'none':'block')+'">➕ إضافة دليفري جديد</button>'+
+  if(ROLE==="admin")html+='<button class="big" id="crShowAdd" style="margin:10px 0;display:'+(CRF.showAdd?'none':'block')+'">➕ إضافة دليفري جديد</button>'+
     '<div class="card" id="crAddWrap" style="display:'+(CRF.showAdd?'block':'none')+'"><h2>إضافة دليفري جديد</h2>'+
     '<input id="crN" placeholder="الاسم"><input id="crP" placeholder="رقم الموبايل" inputmode="tel"><input id="crP2" placeholder="رقم موبايل بديل (اختياري)" inputmode="tel"><input id="crA" placeholder="العنوان">'+(ACT_REQ?'<p class="mute" style="font-size:12px">🔒 الدليفري بيحدّد كلمة سره بنفسه بكود تفعيل بيوصله.</p>':'<input id="crPw" type="text" placeholder="كلمة السر (6 أحرف على الأقل)" autocomplete="off">')+
     '<label class="mute" style="display:block;margin-top:8px">طريقة التحصيل</label>'+
@@ -675,7 +678,7 @@ function crV(){
   if(CR.delegates){
     html+='<h2 style="font-size:15px;margin:18px 0 6px">تفويض صلاحية إدارة الدليفرية</h2><p class="mute">أنت (المدير) صاحب الصلاحية، ويمكنك تفويضها لموظف. الافتراضي: المدير المالي.</p>'+
       (CR.delegates.length?CR.delegates.map(function(d){return '<div class="card row"><div><b>'+esc(d.name)+'</b> <span class="mute">'+RN[d.role]+'</span></div><button class="chip" style="color:var(--t)" data-crdel="'+d.id+':0">سحب الصلاحية</button></div>'}).join(''):'<p class="mute">لا يوجد مفوَّضون.</p>');
-    var avail=(CR.delegate_candidates||[]).filter(function(c){return !CR.delegates.some(function(d){return d.id===c.id})&&(c.role==="finance"||c.role==="prep")});
+    var avail=(CR.delegate_candidates||[]).filter(function(c){return !CR.delegates.some(function(d){return d.id===c.id})&&c.role==="finance"});
     if(avail.length)html+='<div class="card"><select id="crDelSel">'+avail.map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+' ('+RN[c.role]+')</option>'}).join('')+'</select><button class="big" id="crDelAdd">تفويض</button></div>';
   }
   el.innerHTML=html;
@@ -841,12 +844,10 @@ function stockV(){
     '<input id="sNote" placeholder="ملاحظة (اختياري)">'+
     '<button class="big" id="sAdd">تسجيل</button>'+
     '<p id="sErr" style="color:var(--t)"></p></div>'+
-    '<div class="card"><h2>الحد الحرج لإعادة الطلب</h2>'+
-    '<p class="mute" style="margin:0 0 10px">حدّد لكل صنف الكمية اللي لو المخزون وصلها أو أقل منها، هيوصلك إشعار بإنه قارب على النفاد.</p>'+
-    '<table><tr><th>المنتج</th><th>المتاح</th><th>الحد الحرج</th><th></th></tr>'+
-    STK.products.map(function(p){return '<tr><td>'+(p.emoji||"")+' '+esc(p.name)+'</td><td class="'+(Number(p.stock_qty)<=Number(p.low_stock_threshold||0)&&Number(p.low_stock_threshold||0)>0?"lowstock":"")+'">'+p.stock_qty+' '+esc(p.unit)+'</td>'+
-      '<td><input type="number" min="0" style="width:70px;margin:0" data-thr="'+p.id+'" value="'+(p.low_stock_threshold||0)+'"></td>'+
-      '<td><button class="chip" data-thrsave="'+p.id+'">حفظ</button></td></tr>'}).join('')+
+    '<div class="card"><h2>الحد الحرج لإعادة الطلب <span class="mute" style="font-weight:400">(استعلام فقط)</span></h2>'+
+    '<p class="mute" style="margin:0 0 10px">الحد الحرج بيتحدّد من شاشة المنتجات. هنا بتشوف بس المتاح لكل صنف والحد الحرج بتاعه، وبيوصلك إشعار لما المخزون يوصله أو يقل عنه.</p>'+
+    '<table><tr><th>المنتج</th><th>المتاح</th><th>الحد الحرج</th></tr>'+
+    STK.products.map(function(p){var low=Number(p.stock_qty)<=Number(p.low_stock_threshold||0)&&Number(p.low_stock_threshold||0)>0;return '<tr><td>'+(p.emoji||"")+' '+esc(p.name)+'</td><td class="'+(low?"lowstock":"")+'">'+p.stock_qty+' '+esc(p.unit)+'</td><td>'+(Number(p.low_stock_threshold||0)>0?p.low_stock_threshold:'—')+'</td></tr>'}).join('')+
     '</table></div>';
 }
 
@@ -1302,6 +1303,7 @@ document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|D
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
+  if(t.dataset&&t.dataset.hall){var hon=t.checked;(HO.rows||[]).filter(hoMatch).filter(hoReceivable).forEach(function(o){HO.sel[o.id]=hon});cashV();return}
   if(t.dataset&&t.dataset.hsel){HO.sel[t.dataset.hsel]=t.checked;cashV();return}
   if(t.dataset&&t.dataset.hgall){
     var gid=Number(t.dataset.hgall),on=t.checked;
@@ -1328,15 +1330,6 @@ document.addEventListener("click",function(e){
   if(t.dataset.t){go(t.dataset.t);return}
   if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
   if(t.dataset&&t.dataset.hview){HO.view=t.dataset.hview;HO.sel={};cashV();return}
-  if(t.id==="hoAll"){
-    var allIds=(HO.rows||[]).filter(hoMatch).filter(hoReceivable).map(function(o){return o.id});
-    if(!allIds.length)return;
-    if(!confirm("تأكيد إنك استلمت فلوس كل الأوردرات دي ("+allIds.length+" أوردر) من المدير المالي؟"))return;
-    apiCall("PATCH","/cash/handover/decide",{order_ids:allIds,status:"received"}).then(function(r){
-      if(r&&r.ok){HO.sel={};toast("تم تسجيل استلام "+r.updated+" أوردر");cashLoad()}else toast((r&&r.message)||"تعذّر الحفظ");
-    });
-    return;
-  }
   if(t.id==="hoRecv"||t.id==="hoNot"){
     var hids=Object.keys(HO.sel).filter(function(k){return HO.sel[k]}).map(Number);
     if(!hids.length)return;
@@ -1589,7 +1582,7 @@ document.addEventListener("click",function(e){
   if(t.id==="pCan"){editPid=0;prodV();return}
   if(t.dataset.pd){
     if(!confirm("حذف هذا المنتج نهائيًا؟"))return;
-    apiCall("DELETE","/products/"+t.dataset.pd).then(function(){toast("تم الحذف");prodLoad()});
+    apiCall("DELETE","/products/"+t.dataset.pd).then(function(r){if(r&&r.ok){toast("تم الحذف");prodLoad()}else alert((r&&r.message)||"تعذّر الحذف")}).catch(function(){toast("تعذّر الاتصال بالسيرفر")});
     return;
   }
   if(t.id==="pAdd"){
@@ -1652,18 +1645,6 @@ document.addEventListener("click",function(e){
     return;
   }
 
-  if(t.dataset.thrsave){
-    var pid=t.dataset.thrsave;
-    var inp=document.querySelector('input[data-thr="'+pid+'"]');
-    var val=Number(inp.value);
-    if(val<0||isNaN(val)){toast("أدخل رقمًا صحيحًا");return}
-    t.disabled=true;
-    apiCall("PUT","/products/"+pid+"/threshold",{low_stock_threshold:val}).then(function(r){
-      t.disabled=false;
-      if(r&&r.id){toast("تم حفظ الحد الحرج");stockLoad()}else{toast((r&&r.message)||"تعذّر الحفظ")}
-    }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالسيرفر")});
-    return;
-  }
 });
 
 startApp();

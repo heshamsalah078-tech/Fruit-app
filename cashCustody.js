@@ -406,13 +406,13 @@ function normPhone(p) {
       const d = await pool.query(
         `SELECT s.id, s.name, s.role FROM courier_mgmt_delegates g JOIN staff s ON s.id = g.staff_id ORDER BY s.name`
       );
-      const cand = await pool.query(`SELECT id, name, role FROM staff WHERE role <> 'admin' AND active=true ORDER BY role DESC, name`);
+      const cand = await pool.query(`SELECT id, name, role FROM staff WHERE role = 'finance' AND active=true ORDER BY name`);
       out.delegates = d.rows; out.delegate_candidates = cand.rows;
     }
     res.json(out);
   });
 
-  router.post('/couriers', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+  router.post('/couriers', requireAuth('admin'), async (req, res) => {   // adding a courier is the admin's alone
     const { name, phone, phone2, address, settlement_mode, collector_id, password } = req.body;
     if (!name || !String(name).trim() || !phone || !String(phone).trim()) {
       return res.status(400).json({ error: 'invalid', message: 'البيانات غير مكتملة.' });
@@ -497,7 +497,7 @@ function normPhone(p) {
   });
 
   // Delete a courier ONLY if he has no operating history at all (no orders, trips, earnings or cash events).
-  router.delete('/couriers/:id', requireAuth('admin', 'finance', 'prep', 'delivery'), needManage, async (req, res) => {
+  router.delete('/couriers/:id', requireAuth('admin'), async (req, res) => {   // deleting too (stopping is allowed to the manager)
     try {
       const t = await pool.query(`SELECT id FROM couriers WHERE id=$1`, [req.params.id]);
       if (!t.rows.length) return res.status(404).json({ error: 'not_found' });
@@ -519,7 +519,7 @@ function normPhone(p) {
     const grant = req.body.grant !== false;
     try {
       if (grant) {
-        const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role IN ('finance','prep') AND active=true`, [req.params.staffId]);
+        const ok = await pool.query(`SELECT 1 FROM staff WHERE id=$1 AND role = 'finance' AND active=true`, [req.params.staffId]);
         if (!ok.rows.length) return res.status(400).json({ error: 'invalid_staff' });
         await pool.query(
           'INSERT INTO courier_mgmt_delegates (staff_id, granted_by) VALUES ($1,$2) ON CONFLICT (staff_id) DO NOTHING',

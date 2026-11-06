@@ -96,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v26 · 2026-11-05';
+const SERVER_VERSION = 'v27 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {
@@ -284,20 +284,6 @@ app.put('/products/:id', requireAuth('admin'), async (req, res) => {
   res.json(r.rows[0]);
 });
 
-// Admin: quick-update just a product's low-stock threshold (used from the stock screen).
-app.put('/products/:id/threshold', requireAuth('admin'), async (req, res) => {
-  const { low_stock_threshold } = req.body;
-  if (low_stock_threshold === undefined || Number(low_stock_threshold) < 0) {
-    return res.status(400).json({ error: 'invalid', message: 'قيمة غير صحيحة.' });
-  }
-  const r = await pool.query(
-    'UPDATE products SET low_stock_threshold=$1 WHERE id=$2 RETURNING id, name, low_stock_threshold',
-    [Number(low_stock_threshold), req.params.id]
-  );
-  if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
-  res.json(r.rows[0]);
-});
-
 // Admin-only: products at or below their own low_stock_threshold, queried on demand.
 app.get('/stock/low', requireAuth('admin'), async (req, res) => {
   const r = await pool.query(
@@ -310,8 +296,26 @@ app.get('/stock/low', requireAuth('admin'), async (req, res) => {
 });
 
 app.delete('/products/:id', requireAuth('admin'), async (req, res) => {
-  await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
-  res.json({ ok: true });
+  const id = Number(req.params.id);
+  const block = (message) => res.status(409).json({ error: 'in_use', message });
+  try {
+    const p = await pool.query('SELECT name, stock_qty, reserved_qty FROM products WHERE id=$1', [id]);
+    if (!p.rows.length) return res.status(404).json({ error: 'not_found', message: 'المنتج مش موجود.' });
+    const { name, stock_qty, reserved_qty } = p.rows[0];
+    if (Number(stock_qty) > 0) return block('لا يمكن حذف "' + name + '" لأن له مخزون (' + Number(stock_qty) + '). صفّر المخزون الأول بتسجيل حركة تالف.');
+    if (Number(reserved_qty) > 0) return block('لا يمكن حذف "' + name + '" لأن في كمية محجوزة منه لأوردرات لسه ما اتسلمتش.');
+    const open = await pool.query(
+      `SELECT COUNT(DISTINCT o.id)::int AS n FROM order_items oi JOIN orders o ON o.id = oi.order_id
+        WHERE oi.product_id = $1 AND o.status NOT IN ('delivered','cancelled')`, [id]);
+    if (open.rows[0].n > 0) return block('لا يمكن حذف "' + name + '" لأن في ' + open.rows[0].n + ' أوردر شغّال بيستخدمه (لسه ما اتسلمش ولا اتلغى).');
+    const off = await pool.query(`SELECT name FROM offers WHERE gift_product_id = $1 OR $1 = ANY(scope_products) LIMIT 1`, [id]).catch(() => ({ rows: [] }));
+    if (off.rows.length) return block('لا يمكن حذف "' + name + '" لأنه داخل في عرض ("' + off.rows[0].name + '"). شيله من العرض الأول.');
+    await pool.query('DELETE FROM products WHERE id=$1', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    if (e.code === '23503') return block('لا يمكن حذف المنتج لأن ليه أوردرات قديمة مسجّلة.');   // history must stay intact
+    throw e;
+  }
 });
 
 // ---- CUSTOMER ACCOUNTS (signup / login) ----
