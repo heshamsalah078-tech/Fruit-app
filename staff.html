@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v29";
+var APP_VER="v30";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -230,8 +230,14 @@ function bdQuery(silent){
   apiCall("GET",q).then(function(r){
     if(seq!==BQ.seq)return;   // an older answer arriving late
     if(!r||!r.orders){if(BQ.rows===null){BQ.rows=[]}BQ.err=(r&&r.message)||"تعذّر تحميل الأوردرات";bdV();return}
+    var before=bdSel();
     BQ.err="";BQ.rows=r.orders;
     if(r.refresh_sec)BQ.refreshSec=r.refresh_sec;
+    var after=(BQ.rows||[]).find(function(o){return before&&o.id===before.id});
+    if(before&&after&&ROLE==="ops"&&BQ.cand&&(before.assignee_id||null)!==(after.assignee_id||null)){
+      BQ.focus="rows";
+      alert("عفواً، تم تعيين "+(after.assignee_name||"حد آخر")+" لأوردر #"+after.id+" ("+BQ_PH[after.phase]+") وإنت بتختار. اتحدّثت البيانات.");
+    }
     bdTimer();bdKeepSel();
     var typing=document.activeElement&&document.activeElement.id==="bqOrder";
     if(!(silent&&typing))bdV();
@@ -247,15 +253,19 @@ function bdKeepSel(){
 // standing on an order nobody has been assigned to: the list of people who can take it opens by itself (the ops manager only)
 function bdCandsFor(){
   var row=bdSel();
-  if(ROLE!=="ops"||!row||!row.needs_assignee||BQ.hideFor===row.id){BQ.cand=null;if(BQ.focus==="cands")BQ.focus="rows";bdV();return}
-  var seq=++BQ.candSeq,oid=row.id,prevId=(BQ.cand&&BQ.cand.order===oid&&BQ.cand.candidates[BQ.cursor])?BQ.cand.candidates[BQ.cursor].id:null,wasOpen=!!(BQ.cand&&BQ.cand.order===oid);
+  var canList=ROLE==="ops"&&row&&(row.phase==="awaiting_prep"||row.phase==="preparing"||row.phase==="awaiting_delivery");
+  if(!canList||BQ.hideFor===row.id){BQ.cand=null;if(BQ.focus==="cands")BQ.focus="rows";bdV();return}
+  var seq=++BQ.candSeq,oid=row.id,needs=row.needs_assignee,
+      prevId=(BQ.cand&&BQ.cand.order===oid&&BQ.cand.candidates[BQ.cursor])?BQ.cand.candidates[BQ.cursor].id:null,
+      wasOpen=!!(BQ.cand&&BQ.cand.order===oid);
   apiCall("GET","/ops/order/"+oid+"/candidates").then(function(r){
     if(seq!==BQ.candSeq||BQ.selId!==oid)return;
     if(!r||!r.can_assign){BQ.cand=null;if(BQ.focus==="cands")BQ.focus="rows";bdV();return}
     r.order=oid;BQ.cand=r;
     var k=prevId==null?-1:r.candidates.findIndex(function(c){return c.id===prevId});
+    if(k<0)k=r.candidates.findIndex(function(c){return !c.current});   // start on the first person who is NOT already on the order
     BQ.cursor=k>=0?k:0;
-    if(!wasOpen)BQ.focus="cands";
+    if(!wasOpen)BQ.focus=needs?"cands":"rows";   // nobody on it: the cursor goes straight into the list; somebody on it: the list is shown, Enter goes into it
     bdV();
   }).catch(function(){});
 }
@@ -274,8 +284,9 @@ function bdAssign(staffId){
   var cc=c.candidates.find(function(x){return x.id===staffId});if(!cc)return;
   if(cc.state==="reserved"){alert("«"+cc.name+"» محجوز لرحلة تانية. اختار حد غيره.");return}
   if(cc.state!=="free"&&!confirm("«"+cc.name+"» مشغول دلوقتي. لو عيّنته هياخد الأوردر ده بعد ما يخلص اللي في إيده. نكمّل؟"))return;
+  if(cc.current){toast("«"+cc.name+"» هو المسؤول عن الأوردر ده دلوقتي");return}
   BQ.busy=true;
-  apiCall("POST","/ops/order/"+row.id+"/assign",{kind:c.kind,staff_id:staffId}).then(function(r){
+  apiCall("POST","/ops/order/"+row.id+"/assign",{kind:c.kind,staff_id:staffId,expected_assignee_id:(c.assigned&&c.assigned.id)||null}).then(function(r){
     BQ.busy=false;
     if(r&&r.ok)toast("تم التعيين ✅");else alert((r&&r.message)||"تعذّر التعيين");
     BQ.cand=null;BQ.focus="rows";BQ.hideFor=0;bdQuery(true);
@@ -315,17 +326,18 @@ function bdV(){
       '<br>'+(sel.phase==="awaiting_prep"||sel.phase==="preparing"?'🧑‍🍳 موظف التجهيز: ':'🛵 المندوب: ')+'<b>'+(sel.assignee_name?esc(sel.assignee_name):'لم يُعيَّن')+'</b></div>';
   }
   var c=BQ.cand;
-  if(c&&ROLE==="ops"&&sel&&sel.needs_assignee){
+  if(c&&ROLE==="ops"&&sel&&c.order===sel.id){
     var ST_P={free:"فاضي ✅",busy:"معاه أوردر"},ST_C={free:"فاضي ✅",on_trip:"في رحلة",reserved:"محجوز لرحلة تانية",off:"مش على الدوام"};
-    h+='<div class="card" style="border:2px solid var(--g)"><b>'+(c.kind==="prep"?'🧑‍🍳 اختار موظف التجهيز':'🛵 اختار المندوب')+'</b>'+
+    h+='<div class="card" style="border:2px solid var(--g)"><b>'+(c.kind==="prep"?'🧑‍🍳 ':'🛵 ')+(c.assigned?'غيّر ':'اختار ')+(c.kind==="prep"?'موظف التجهيز':'المندوب')+'</b>'+
+      (c.assigned?'<p style="margin:4px 0 0">المسؤول حالياً: <b>'+esc(c.assigned.name||"—")+'</b></p>':'')+
       '<p class="mute" style="margin:4px 0 8px">'+(c.mode==="free"?'الفاضيين دلوقتي:':'مفيش حد فاضي. دول مرتبين حسب مين هيخلص اللي في إيده الأول:')+'</p>'+
       '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th>الاسم</th><th>الحالة</th><th>يخلص بعد</th></tr>'+
       c.candidates.map(function(x,i){
         var st=(c.kind==="prep"?ST_P:ST_C)[x.state]||x.state;if(c.kind==="prep"&&x.state==="busy"&&x.open_orders>1)st="معاه "+x.open_orders+" أوردر";
-        return '<tr data-bqcand="'+x.id+'" style="cursor:pointer;'+(i===BQ.cursor?'background:var(--g2);outline:2px solid var(--g)':'')+'"><td><b>'+esc(x.name)+'</b></td><td>'+st+'</td><td>'+(x.state==="free"?'—':(x.eta_min!=null?'~'+x.eta_min+' د':'—'))+'</td></tr>'}).join("")+'</table></div>'+
+        return '<tr data-bqcand="'+x.id+'" style="cursor:pointer;'+(i===BQ.cursor?'background:var(--g2);outline:2px solid var(--g)':'')+'"><td><b>'+esc(x.name)+'</b>'+(x.current?' <span class="mute">(الحالي)</span>':'')+'</td><td>'+st+'</td><td>'+(x.state==="free"?'—':(x.eta_min!=null?'~'+x.eta_min+' د':'—'))+'</td></tr>'}).join("")+'</table></div>'+
       '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button type="button" class="chip" id="bqCUp">▲</button><button type="button" class="chip" id="bqCDown">▼</button>'+
       '<button class="big" id="bqCGo" style="flex:1;min-width:140px">⏎ تعيين المحدد</button><button type="button" class="chip" id="bqCHide">✕ إخفاء</button></div>'+
-      '<p class="mute" style="font-size:12px;margin:8px 0 0">من الكيبورد: ⬆⬇ للتنقل، Enter للتعيين (بيتحفظ لوحده)، Esc للإخفاء.</p></div>';
+      '<p class="mute" style="font-size:12px;margin:8px 0 0">من الكيبورد: ⬆⬇ للتنقل، Enter للتعيين (بيتحفظ لوحده)، Esc للإخفاء. ولو الأوردر متعيّن له حد، Enter بيدخّلك القايمة.</p></div>';
   }
   el.innerHTML=h;
   if(BQ.scroll){BQ.scroll=false;var tr=el.querySelector('tr[data-bqrow="'+BQ.selId+'"]');if(tr&&tr.scrollIntoView&&BQ.focus==="rows")tr.scrollIntoView({block:"nearest"});
@@ -345,7 +357,7 @@ document.addEventListener("keydown",function(e){
   if(e.target&&e.target.id==="bqOrder"&&e.key==="Enter"){BQ.order=e.target.value.trim();bdQuery(false);e.preventDefault();return}
   if(/INPUT|SELECT|TEXTAREA/.test(tg))return;   // typing in a field: leave the keys alone
   if(e.key==="ArrowDown"||e.key==="ArrowUp"){var d=e.key==="ArrowDown"?1:-1;if(BQ.focus==="cands"&&BQ.cand)bdCursor(d);else bdMove(d);e.preventDefault()}
-  else if(e.key==="Enter"){if(BQ.focus==="cands"&&BQ.cand){bdAssignCursor();e.preventDefault()}}
+  else if(e.key==="Enter"){if(BQ.focus==="cands"&&BQ.cand){bdAssignCursor();e.preventDefault()}else if(BQ.cand){BQ.focus="cands";bdV();e.preventDefault()}}
   else if(e.key==="Escape"){if(BQ.focus==="cands"){bdHideList();e.preventDefault()}}
 });
 document.addEventListener("change",function(e){

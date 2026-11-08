@@ -96,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v29 · 2026-11-05';
+const SERVER_VERSION = 'v30 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {
@@ -512,6 +512,10 @@ app.post('/orders', requireAuth('customer'), async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // A customer has ONE open order at a time (the app says so too; this is the real guard).
+    const openOrd = await client.query(`SELECT id FROM orders WHERE customer_id = $1 AND status NOT IN ('delivered','cancelled') LIMIT 1`, [customer_id]);
+    if (openOrd.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'open_order', message: 'لديك طلب قيد التنفيذ، أكمله أولًا قبل ما تطلب تاني.' }); }
+
     // Delivery fee: looked up from the zones table at confirmation time and frozen on the order. The app's value is ignored.
     const zr = await zones.resolveForOrder(client, customer_id, req.body.zone_id);
     if (!zr.ok) { await client.query('ROLLBACK'); return res.status(zr.code === 'out_of_area' ? 422 : 400).json({ error: zr.code, message: zr.message }); }
@@ -779,10 +783,10 @@ app.get('/ops/orders', requireAuth('admin', 'ops'), async (req, res) => {
        WHERE o.status <> 'cancelled' ${courierSql}
          AND (o.status IN ('awaiting_prep','preparing','awaiting_delivery','on_the_way')
               OR (o.status = 'delivered' AND (
-                    ($1::text IS NULL AND o.created_at >= (date_trunc('day', now() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo'))
-                 OR ($1::text IS NOT NULL AND o.created_at >= (($1::date)::timestamp AT TIME ZONE 'Africa/Cairo')
-                                         AND o.created_at <  ((($1::date) + 1)::timestamp AT TIME ZONE 'Africa/Cairo')))))
-       ORDER BY o.created_at LIMIT 800`, params);
+                    ($1::text IS NULL AND o.delivered_at >= (date_trunc('day', now() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo'))
+                 OR ($1::text IS NOT NULL AND o.delivered_at >= (($1::date)::timestamp AT TIME ZONE 'Africa/Cairo')
+                                         AND o.delivered_at <  ((($1::date) + 1)::timestamp AT TIME ZONE 'Africa/Cairo')))))
+       ORDER BY COALESCE(o.delivered_at, o.created_at) LIMIT 800`, params);
     let rows = r.rows.map(opsShape).filter((x) => states.includes(x.phase) && (!late || x.late_min > 0));
     rows.sort((a, b) => (b.late_min - a.late_min) || (new Date(a.created_at) - new Date(b.created_at)));
     res.json({ orders: await withItems(rows), refresh_sec });

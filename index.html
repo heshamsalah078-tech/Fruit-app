@@ -123,6 +123,7 @@ nav em{position:absolute;top:0;inset-inline-start:50%;margin-inline-start:6px;ba
 <header><h1>🥬 سوق الطازج</h1><p id="hi">خضار وفواكه طازجة لباب بيتك</p></header>
 
 <section id="shop" class="on">
+  <div id="storageBar"></div>
   <div id="restoreBar"></div>
   <div id="offStrip"></div>
   <div id="chips"></div>
@@ -291,8 +292,9 @@ function dbSaveOrder(o,onOk,onFail){
 }
 function srvLines(x){return (x.items||[]).map(function(i){return {id:i.product_id,n:i.name,e:i.emoji||"",q:Number(i.quantity),u:i.unit||"",line:Number(i.line_total!=null?i.line_total:Number(i.quantity)*Number(i.unit_price||0)),gift:!!i.is_gift}})}
 function refreshMyOrders(){
-  if(!me.id)return;
+  if(!me.id){OLOADED=true;return}
   apiCall("GET","/orders/customer/"+me.id).then(function(r){
+    OLOADED=true;
     if(!Array.isArray(r))return;
     orders=r.map(function(x){
       var local=orders.find(function(o){return o.id===x.id})||{};
@@ -305,7 +307,7 @@ function refreshMyOrders(){
       });
     });
     draw();
-  }).catch(function(){});
+  }).catch(function(){OLOADED=true});
 }
 setInterval(function(){if(TOK&&ROLE==="customer")refreshMyOrders()},12000);
 function loadProducts(){
@@ -313,7 +315,7 @@ function loadProducts(){
 }
 loadProducts();
 setInterval(loadProducts,30000);
-var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[];
+var CATS=["الكل"],CATMETA=[],cat="",cart={},orders=[],OLOADED=false;   // OLOADED: my orders were fetched from the server, so "you already have an open order" is known
 fetch(API+"/categories").then(function(r){return r.json()}).then(function(a){if(a&&a.length){CATMETA=a;CATS=["الكل"].concat(a.map(function(c){return c.name}));draw()}}).catch(function(){});
 var STATUS_SEQ=["awaiting_prep","preparing","awaiting_delivery","on_the_way","delivered"];
 var STATUS_LABELS={awaiting_prep:"بانتظار التجهيز",preparing:"جارٍ التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق إليك",delivered:"تم التسليم",cancelled:"تم الإلغاء"};
@@ -513,7 +515,15 @@ function renderRestoreBar(){
     el.dataset.on="1";
   }else if(!need&&el.dataset.on){el.innerHTML="";el.dataset.on=""}
 }
-function draw(){renderRestoreBar();
+function renderStorageBar(){
+  var el=$("storageBar");if(!el)return;
+  var bad=!storageOk();
+  if(bad&&!el.dataset.on){
+    el.innerHTML='<div class="card" style="margin:10px 12px 0;border:1px solid #f0b429"><b>⚠️ المتصفح مش بيحفظ بياناتك</b><div class="mute" style="margin-top:4px;line-height:1.7">ده بيحصل لو فاتح من <b>تصفّح خفي (Incognito)</b> أو الكوكيز مقفولة. عشان التطبيق يفتكرك:<br>1) افتح الرابط في <b>Chrome عادي</b> (مش الخفي)، ولو جاي من واتساب أو تطبيق تاني، انسخ الرابط وافتحه في Chrome.<br>2) في Chrome: ⋮ ← الإعدادات ← إعدادات الموقع ← <b>ملفات تعريف الارتباط (Cookies)</b> ← سيب "السماح".<br>لحد ما تعمل كده، هتكتب رقم موبايلك في كل مرة تفتح.</div></div>';
+    el.dataset.on="1";
+  }else if(!bad&&el.dataset.on){el.innerHTML="";el.dataset.on=""}
+}
+function draw(){renderRestoreBar();renderStorageBar();
   acctV();shop();cartV();adminV();ordV();storeV();drvV();refV();
   var c=count();$("cc").hidden=!c;$("cc").textContent=num(c);
 }
@@ -523,6 +533,7 @@ document.addEventListener("click",function(e){
   if(d.t)go(d.t);
   else if(d.c!==undefined){cat=d.c;window.scrollTo(0,0);draw()}
   else if(d.a){
+    if(TOK&&me.id&&!OLOADED){toast("لحظة، بنتأكد من طلباتك...");refreshMyOrders();return}   // never accept the first product before we know about an open order
     if(active()){toast("لديك طلب قيد التنفيذ، أكمله أولًا قبل إضافة منتجات جديدة");return}
     var prod=P.find(function(p){return p.id==d.a});
     if(prod&&prod.avail!==undefined&&prod.avail<=(cart[d.a]||0)){toast("عذرًا، نفدت الكمية المتاحة من هذا المنتج");return}
