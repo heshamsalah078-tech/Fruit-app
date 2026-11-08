@@ -96,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v27 · 2026-11-05';
+const SERVER_VERSION = 'v29 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {
@@ -723,51 +723,72 @@ app.get('/orders/delayed', requireAuth('admin', 'ops'), async (req, res) => {
   res.json(await withItems(r.rows));
 });
 
-// Ops/admin live board: every order by stage (being prepared / ready & waiting for delivery / on the way / delivered today),
-// with who is handling it, how long it has been there, and whether it is LATE against its own due times.
-app.get('/ops/board', requireAuth('admin', 'ops'), async (req, res) => {
+// ---------- Ops follow-up: an INQUIRY over orders (date / order number / courier / status) ----------
+// Open orders (not yet delivered) are always included, whatever their date; finished ones follow the chosen date.
+// stage: preparing | awaiting (ready, waiting for a courier) | on_the_way | delivered.   late_min > 0 = past its own due time.
+const OPS_ORDER_SELECT = `
+  SELECT o.id, o.status, o.total, o.zone_name, o.created_at, o.trip_id, o.assigned_prep_id,
+         c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
+         p.name AS prep_name, cr.id AS courier_id, cr.name AS courier_name, t.status AS trip_status,
+         EXTRACT(EPOCH FROM (now() - o.created_at))::int AS age_s,
+         EXTRACT(EPOCH FROM (o.prep_due_at - now()))::int AS prep_remaining_s,
+         EXTRACT(EPOCH FROM (o.pickup_due_at - now()))::int AS pickup_remaining_s,
+         EXTRACT(EPOCH FROM (o.delivery_due_at - now()))::int AS delivery_remaining_s,
+         EXTRACT(EPOCH FROM (o.delivered_at - o.delivery_due_at))::int AS delivered_late_s,
+         EXTRACT(EPOCH FROM (now() - o.delivered_at))::int AS since_delivered_s
+    FROM orders o
+    JOIN customers c ON c.id = o.customer_id
+    LEFT JOIN staff p ON p.id = COALESCE(o.prep_staff_id, o.assigned_prep_id)
+    LEFT JOIN trips t ON t.id = o.trip_id
+    LEFT JOIN couriers cr ON cr.id = COALESCE(o.delivery_staff_id, t.courier_id, o.assigned_delivery_id)`;
+function opsShape(o) {
+  const lateOf = (x) => (x != null && x < 0 ? Math.ceil(-x / 60) : 0);
+  const phase = o.status;   // awaiting_prep | preparing | awaiting_delivery | on_the_way | delivered
+  const prepPhase = phase === 'awaiting_prep' || phase === 'preparing';
+  const rem = prepPhase ? o.prep_remaining_s : phase === 'awaiting_delivery' ? o.pickup_remaining_s : phase === 'on_the_way' ? o.delivery_remaining_s : null;
+  const late_min = phase === 'delivered' ? (o.delivered_late_s > 0 ? Math.ceil(o.delivered_late_s / 60) : 0) : lateOf(rem);
+  const assignee_id = prepPhase ? o.assigned_prep_id : o.courier_id;
+  const needs_assignee = prepPhase ? !o.assigned_prep_id : phase === 'awaiting_delivery' ? (!o.courier_id && !!o.trip_id && ['unassigned', 'offering'].includes(o.trip_status)) : false;
+  return { id: o.id, status: o.status, phase, customer_name: o.customer_name, customer_phone: o.customer_phone, customer_address: o.customer_address,
+           zone_name: o.zone_name, total: Number(o.total), created_at: o.created_at, age_min: Math.round(o.age_s / 60),
+           assignee_id: assignee_id || null, assignee_name: (prepPhase ? o.prep_name : o.courier_name) || null, needs_assignee,
+           trip_id: o.trip_id, trip_status: o.trip_status, late_min, remaining_min: rem == null ? null : Math.round(rem / 60) };
+}
+// states = comma list of awaiting_prep,preparing,awaiting_delivery,on_the_way,delivered (default: the four open ones); late=1 = only late ones.
+// Open orders are always included whatever their date; "delivered" ones follow the chosen date (default: today).
+app.get('/ops/orders', requireAuth('admin', 'ops'), async (req, res) => {
   try {
-    const r = await pool.query(
-      `SELECT o.id, o.status, o.total, o.zone_name,
-              c.name AS customer_name, c.phone AS customer_phone,
-              p.name AS prep_name, cr.name AS courier_name, t.status AS trip_status,
-              EXTRACT(EPOCH FROM (now() - o.created_at))::int AS age_s,
-              EXTRACT(EPOCH FROM (now() - o.prepared_at))::int AS since_ready_s,
-              EXTRACT(EPOCH FROM (now() - o.delivery_started_at))::int AS since_dispatch_s,
-              EXTRACT(EPOCH FROM (now() - o.delivered_at))::int AS since_delivered_s,
-              EXTRACT(EPOCH FROM (o.prep_due_at - now()))::int AS prep_remaining_s,
-              EXTRACT(EPOCH FROM (o.pickup_due_at - now()))::int AS pickup_remaining_s,
-              EXTRACT(EPOCH FROM (o.delivery_due_at - now()))::int AS delivery_remaining_s,
-              EXTRACT(EPOCH FROM (o.delivered_at - o.created_at))::int AS total_s,
-              EXTRACT(EPOCH FROM (o.delivered_at - o.delivery_due_at))::int AS delivered_late_s
-         FROM orders o
-         JOIN customers c ON c.id = o.customer_id
-         LEFT JOIN staff p ON p.id = COALESCE(o.prep_staff_id, o.assigned_prep_id)
-         LEFT JOIN trips t ON t.id = o.trip_id
-         LEFT JOIN couriers cr ON cr.id = COALESCE(o.delivery_staff_id, t.courier_id, o.assigned_delivery_id)
-        WHERE o.status IN ('awaiting_prep','preparing','awaiting_delivery','on_the_way')
-           OR (o.status = 'delivered' AND o.delivered_at >= (date_trunc('day', now() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo'))
-        ORDER BY o.created_at`);
-    const lateOf = (s) => (s != null && s < 0 ? Math.ceil(-s / 60) : 0);   // minutes past due, 0 = not late
-    const stages = { preparing: [], awaiting: [], on_the_way: [], delivered: [] };
-    for (const o of r.rows) {
-      const row = { id: o.id, customer_name: o.customer_name, customer_phone: o.customer_phone, zone_name: o.zone_name, total: Number(o.total),
-                    prep_name: o.prep_name, courier_name: o.courier_name, trip_status: o.trip_status };
-      if (o.status === 'awaiting_prep' || o.status === 'preparing') {
-        stages.preparing.push({ ...row, started: o.status === 'preparing', age_min: Math.round(o.age_s / 60), remaining_min: o.prep_remaining_s == null ? null : Math.round(o.prep_remaining_s / 60), late_min: lateOf(o.prep_remaining_s) });
-      } else if (o.status === 'awaiting_delivery') {
-        stages.awaiting.push({ ...row, ready_min: o.since_ready_s == null ? null : Math.round(o.since_ready_s / 60), remaining_min: o.pickup_remaining_s == null ? null : Math.round(o.pickup_remaining_s / 60), late_min: lateOf(o.pickup_remaining_s) });
-      } else if (o.status === 'on_the_way') {
-        stages.on_the_way.push({ ...row, out_min: o.since_dispatch_s == null ? null : Math.round(o.since_dispatch_s / 60), remaining_min: o.delivery_remaining_s == null ? null : Math.round(o.delivery_remaining_s / 60), late_min: lateOf(o.delivery_remaining_s) });
-      } else {
-        stages.delivered.push({ ...row, ago_min: o.since_delivered_s == null ? null : Math.round(o.since_delivered_s / 60), total_min: o.total_s == null ? null : Math.round(o.total_s / 60), late_min: o.delivered_late_s > 0 ? Math.ceil(o.delivered_late_s / 60) : 0 });
-      }
+    const refresh = await pool.query(`SELECT value FROM app_settings WHERE key = 'ops_refresh_sec'`);
+    const rs = parseInt(refresh.rows[0] && refresh.rows[0].value, 10);
+    const refresh_sec = Number.isInteger(rs) && rs >= 5 && rs <= 600 ? rs : 30;
+    const oid = Number(req.query.order_id);
+    if (Number.isInteger(oid) && oid > 0) {
+      const r = await pool.query(OPS_ORDER_SELECT + ` WHERE o.id = $1 AND o.status <> 'cancelled'`, [oid]);
+      return res.json({ orders: await withItems(r.rows.map(opsShape)), refresh_sec });
     }
-    stages.delivered.reverse();   // newest delivery first
-    res.json({ stages });
+    const ALL = ['awaiting_prep', 'preparing', 'awaiting_delivery', 'on_the_way', 'delivered'];
+    const states = (req.query.states ? String(req.query.states).split(',') : ALL.slice(0, 4)).filter((x) => ALL.includes(x));
+    const late = req.query.late === '1';
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : null;
+    const params = [date];
+    let courierSql = '';
+    const cid = Number(req.query.courier_id);
+    if (Number.isInteger(cid) && cid > 0) { params.push(cid); courierSql = ` AND COALESCE(o.delivery_staff_id, t.courier_id, o.assigned_delivery_id) = $${params.length}`; }
+    const r = await pool.query(
+      OPS_ORDER_SELECT + `
+       WHERE o.status <> 'cancelled' ${courierSql}
+         AND (o.status IN ('awaiting_prep','preparing','awaiting_delivery','on_the_way')
+              OR (o.status = 'delivered' AND (
+                    ($1::text IS NULL AND o.created_at >= (date_trunc('day', now() AT TIME ZONE 'Africa/Cairo') AT TIME ZONE 'Africa/Cairo'))
+                 OR ($1::text IS NOT NULL AND o.created_at >= (($1::date)::timestamp AT TIME ZONE 'Africa/Cairo')
+                                         AND o.created_at <  ((($1::date) + 1)::timestamp AT TIME ZONE 'Africa/Cairo')))))
+       ORDER BY o.created_at LIMIT 800`, params);
+    let rows = r.rows.map(opsShape).filter((x) => states.includes(x.phase) && (!late || x.late_min > 0));
+    rows.sort((a, b) => (b.late_min - a.late_min) || (new Date(a.created_at) - new Date(b.created_at)));
+    res.json({ orders: await withItems(rows), refresh_sec });
   } catch (e) {
-    console.error('ops board failed', e.message);
-    res.status(500).json({ error: 'failed', message: 'تعذّر تحميل المتابعة.' });
+    console.error('ops/orders failed', e.message);
+    res.status(500).json({ error: 'failed', message: 'تعذّر تحميل الأوردرات.' });
   }
 });
 

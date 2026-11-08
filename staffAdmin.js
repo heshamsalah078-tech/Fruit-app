@@ -308,7 +308,7 @@ function normPhone(p) {
   });
 
   // body: { order_ids:[...], prep_staff_id?: id|null, delivery_staff_id?: id|null }  (a key left out = unchanged)
-  router.patch('/orders/assign', requireAuth('admin', 'ops'), async (req, res) => {
+  router.patch('/orders/assign', requireAuth('ops'), async (req, res) => {   // assigning is the ops manager's job, not the admin's
     const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids.map(Number).filter(Number.isInteger) : [];
     const hasP = Object.prototype.hasOwnProperty.call(req.body, 'prep_staff_id');
     const hasD = Object.prototype.hasOwnProperty.call(req.body, 'delivery_staff_id');

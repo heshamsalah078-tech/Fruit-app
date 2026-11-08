@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v27";
+var APP_VER="v29";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -175,7 +175,7 @@ var NAV={
   delivery:[["driver","🛵","التوصيل"],["cash","💵","حساباتي"]],
   finance:[["cash","💵","التحصيل"]],
   ops:[["board","📊","المتابعة"],["ops","🗂️","التشغيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["audit","❌","الإلغاءات والتعيين اليدوي"]],
-  admin:[["ops","🗂️","التشغيل"],["board","📊","المتابعة"],["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["offers","🎁","العروض"],["audit","❌","الإلغاءات والتعيين اليدوي"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
+  admin:[["ops","⚙️","إعدادات التشغيل"],["board","📊","المتابعة"],["store","🧑‍🍳","التجهيز"],["driver","🛵","التوصيل"],["delayed","⏰","المدد والتأخير"],["zones","📍","مناطق التوصيل"],["offers","🎁","العروض"],["audit","❌","الإلغاءات والتعيين اليدوي"],["categories","🗂️","الأقسام"],["products","🥕","المنتجات"],["stock","📦","المخزون"],["lowstock","⚠️","الأصناف الناقصة"],["shortages","🚫","محاولات شراء فاشلة"],["referral","🎁","الإحالة"],["couriers","🛵","الدليفرية"],["cash","💵","التحصيل"],["complaints","📝","الشكاوى"],["team","👥","الموظفون"]]
 };
 function buildNav(){
   var items=(NAV[ROLE]||[]).concat([["me","👤","حسابي"],["out","🚪","خروج"]]);
@@ -206,61 +206,156 @@ function go(t){
   if(t==="me")meLoad();
 }
 
-/* ---------- live board (ops + admin): every order by stage, with delays ---------- */
-var BD=null,BDL=false;
-function bdLoad(){
-  apiCall("GET","/ops/board").then(function(r){
-    if(r&&r.stages){BD=r.stages;BD.at=new Date();bdV()}
-    else if(!BD&&$("board"))$("board").innerHTML='<h1 style="font-size:19px">📊 المتابعة</h1><p class="mute">تعذّر تحميل المتابعة، هنحاول تاني.</p>';
+/* ---------- follow-up (ops + admin): inquiry -> table you can walk through -> the list of who can take the order ---------- */
+function todayStr(){var d=new Date(new Date().toLocaleString("en-US",{timeZone:"Africa/Cairo"}));return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)}
+var BQ={states:{awaiting_prep:true,preparing:true,awaiting_delivery:true,on_the_way:true,delivered:false},late:true,date:"",order:"",courier:"",
+        rows:null,err:"",selId:0,focus:"rows",cand:null,cursor:0,hideFor:0,refreshSec:30,timer:null,timerSec:0,couriers:[],busy:false,seq:0,candSeq:0,scroll:false};
+var BQ_ST=[["awaiting_prep","بانتظار التجهيز"],["preparing","التجهيز"],["awaiting_delivery","بانتظار التوصيل"],["on_the_way","في الطريق"],["delivered","تم التسليم (النهارده)"]];
+var BQ_PH={awaiting_prep:"بانتظار التجهيز",preparing:"التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق",delivered:"تم التسليم"};
+function bdLoad(){bdQuery(false)}
+function bdTimer(){   // the screen refreshes itself every N seconds (N is a setting), so nobody picks from a stale list
+  if(BQ.timer&&BQ.timerSec===BQ.refreshSec)return;
+  if(BQ.timer)clearInterval(BQ.timer);
+  BQ.timerSec=BQ.refreshSec;
+  BQ.timer=setInterval(function(){if(CUR_TAB==="board"&&!BQ.busy)bdQuery(true)},BQ.refreshSec*1000);
+}
+function bdQuery(silent){
+  if(!BQ.date)BQ.date=todayStr();
+  if(!BQ.couriers.length)apiCall("GET","/staff/assignable").then(function(r){if(r&&r.delivery&&r.delivery.length){BQ.couriers=r.delivery;bdV()}}).catch(function(){});
+  var st=BQ_ST.map(function(x){return x[0]}).filter(function(k){return BQ.states[k]});
+  if(!st.length){BQ.rows=[];BQ.err="";bdV();return}
+  var q="/ops/orders?states="+st.join(",")+(BQ.late?"&late=1":"")+"&date="+encodeURIComponent(BQ.date)+(BQ.order?"&order_id="+encodeURIComponent(BQ.order):"")+(BQ.courier?"&courier_id="+encodeURIComponent(BQ.courier):"");
+  var seq=++BQ.seq;
+  if(!silent){BQ.rows=null;bdV()}
+  apiCall("GET",q).then(function(r){
+    if(seq!==BQ.seq)return;   // an older answer arriving late
+    if(!r||!r.orders){if(BQ.rows===null){BQ.rows=[]}BQ.err=(r&&r.message)||"تعذّر تحميل الأوردرات";bdV();return}
+    BQ.err="";BQ.rows=r.orders;
+    if(r.refresh_sec)BQ.refreshSec=r.refresh_sec;
+    bdTimer();bdKeepSel();
+    var typing=document.activeElement&&document.activeElement.id==="bqOrder";
+    if(!(silent&&typing))bdV();
+    bdCandsFor();
+  }).catch(function(){if(seq===BQ.seq&&BQ.rows===null){BQ.rows=[];BQ.err="تعذّر الاتصال بالسيرفر";bdV()}});
+}
+function bdSel(){return (BQ.rows||[]).find(function(o){return o.id===BQ.selId})||null}
+function bdKeepSel(){
+  var rows=BQ.rows||[];
+  if(!rows.length){BQ.selId=0;return}
+  if(!rows.some(function(o){return o.id===BQ.selId})){BQ.selId=rows[0].id;BQ.hideFor=0;BQ.cand=null;BQ.focus="rows"}
+}
+// standing on an order nobody has been assigned to: the list of people who can take it opens by itself (the ops manager only)
+function bdCandsFor(){
+  var row=bdSel();
+  if(ROLE!=="ops"||!row||!row.needs_assignee||BQ.hideFor===row.id){BQ.cand=null;if(BQ.focus==="cands")BQ.focus="rows";bdV();return}
+  var seq=++BQ.candSeq,oid=row.id,prevId=(BQ.cand&&BQ.cand.order===oid&&BQ.cand.candidates[BQ.cursor])?BQ.cand.candidates[BQ.cursor].id:null,wasOpen=!!(BQ.cand&&BQ.cand.order===oid);
+  apiCall("GET","/ops/order/"+oid+"/candidates").then(function(r){
+    if(seq!==BQ.candSeq||BQ.selId!==oid)return;
+    if(!r||!r.can_assign){BQ.cand=null;if(BQ.focus==="cands")BQ.focus="rows";bdV();return}
+    r.order=oid;BQ.cand=r;
+    var k=prevId==null?-1:r.candidates.findIndex(function(c){return c.id===prevId});
+    BQ.cursor=k>=0?k:0;
+    if(!wasOpen)BQ.focus="cands";
+    bdV();
   }).catch(function(){});
 }
-function bdV(){
-  var el=$("board");if(!el||!BD)return;
-  var STG=[
-    ["preparing","🧑‍🍳","جاري التجهيز"],
-    ["awaiting","📦","جاهز ومستني التوصيل"],
-    ["on_the_way","🛵","في الطريق للعميل"],
-    ["delivered","✅","تم التسليم النهارده"]];
-  function min(n){return n==null?"—":(n+" د")}
-  function late(o){return o.late_min>0}
-  var tiles=STG.map(function(g){
-    var rows=BD[g[0]],nl=rows.filter(late).length;
-    return '<div class="card" style="margin:0;text-align:center;padding:10px 6px"><div>'+g[1]+' '+g[2]+'</div><div style="font-size:26px;font-weight:800">'+rows.length+'</div>'+
-      (nl?'<div style="color:#b42318;font-weight:700">⏰ '+nl+' متأخر</div>':'<div class="mute">'+(g[0]==="delivered"?'':'مفيش تأخير')+'</div>')+'</div>'}).join("");
-  var tm=BD.at.toLocaleTimeString("ar-EG",{hour:"2-digit",minute:"2-digit"});
-  var h='<h1 style="font-size:19px">📊 المتابعة</h1>'+
-    '<p class="mute" style="margin:0 0 8px">بتتحدّث لوحدها كل 15 ثانية · آخر تحديث '+esc(tm)+'</p>'+
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'+tiles+'</div>'+
-    '<label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;font-weight:600"><input type="checkbox" id="bdLate" style="width:18px;height:18px"'+(BDL?' checked':'')+'> المتأخرة بس</label>';
-  function line(g,o){
-    var who="",tm2="";
-    if(g==="preparing"){
-      who='🧑‍🍳 المجهّز: '+esc(o.prep_name||"لسه ما اتعيّنش")+(o.started?'':' · لسه ما بدأش');
-      tm2='بقاله '+min(o.age_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
-    }else if(g==="awaiting"){
-      var ts=o.trip_status;
-      who=o.courier_name?('🛵 المندوب: '+esc(o.courier_name)+(ts==="assigned"?' (رايح المحل)':'')):(ts==="offering"?'🛵 بندوّر على مندوب':'🛵 مستني تعيين مندوب');
-      tm2='جاهز من '+min(o.ready_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
-    }else if(g==="on_the_way"){
-      who='🛵 المندوب: '+esc(o.courier_name||"—");
-      tm2='خرج من '+min(o.out_min)+(o.late_min>0?'':(o.remaining_min!=null?' · باقي '+min(o.remaining_min):''));
-    }else{
-      who='🛵 '+esc(o.courier_name||"—");
-      tm2='اتسلّم من '+min(o.ago_min)+' · المدة الكلية '+min(o.total_min);
-    }
-    return '<div style="padding:8px 0;border-top:1px solid var(--line)"><b>#'+o.id+'</b> · '+esc(o.customer_name)+(o.zone_name?' · '+esc(o.zone_name):'')+' <span class="mute">· '+o.total+' ج.م</span>'+
-      (o.late_min>0?' <span style="color:#b42318;font-weight:700">⏰ '+(g==="delivered"?'اتأخر ':'متأخر ')+o.late_min+' د</span>':'')+
-      '<div class="mute" style="margin-top:2px">'+who+'</div><div class="mute">'+tm2+'</div></div>';
-  }
-  STG.forEach(function(g){
-    var rows=BD[g[0]].slice();
-    if(BDL)rows=rows.filter(late);
-    rows.sort(function(a,b){return (b.late_min-a.late_min)});   // the most delayed first
-    h+='<div class="card"><h2>'+g[1]+' '+g[2]+' ('+rows.length+')</h2>'+(rows.length?rows.map(function(o){return line(g[0],o)}).join(""):'<p class="mute" style="margin:6px 0 0">'+(BDL?'مفيش متأخر هنا 👍':'مفيش أوردرات هنا دلوقتي.')+'</p>')+'</div>';
-  });
-  el.innerHTML=h;
+function bdMove(d){
+  var rows=BQ.rows||[];if(!rows.length)return;
+  var i=rows.findIndex(function(o){return o.id===BQ.selId});i=Math.min(Math.max(i+d,0),rows.length-1);
+  bdPick(rows[i].id);
 }
-
+function bdPick(id){BQ.selId=id;BQ.hideFor=0;BQ.cand=null;BQ.focus="rows";BQ.scroll=true;bdV();bdCandsFor()}
+function bdCursor(d){if(!BQ.cand)return;BQ.cursor=Math.min(Math.max(BQ.cursor+d,0),BQ.cand.candidates.length-1);BQ.scroll=true;bdV()}
+function bdHideList(){var row=bdSel();if(row)BQ.hideFor=row.id;BQ.cand=null;BQ.focus="rows";bdV()}
+function bdAssignCursor(){var c=BQ.cand&&BQ.cand.candidates[BQ.cursor];if(c)bdAssign(c.id)}
+// the choice saves by itself. If somebody got there first the server refuses and says who it is: nothing is overwritten.
+function bdAssign(staffId){
+  var row=bdSel(),c=BQ.cand;if(!row||!c||BQ.busy)return;
+  var cc=c.candidates.find(function(x){return x.id===staffId});if(!cc)return;
+  if(cc.state==="reserved"){alert("«"+cc.name+"» محجوز لرحلة تانية. اختار حد غيره.");return}
+  if(cc.state!=="free"&&!confirm("«"+cc.name+"» مشغول دلوقتي. لو عيّنته هياخد الأوردر ده بعد ما يخلص اللي في إيده. نكمّل؟"))return;
+  BQ.busy=true;
+  apiCall("POST","/ops/order/"+row.id+"/assign",{kind:c.kind,staff_id:staffId}).then(function(r){
+    BQ.busy=false;
+    if(r&&r.ok)toast("تم التعيين ✅");else alert((r&&r.message)||"تعذّر التعيين");
+    BQ.cand=null;BQ.focus="rows";BQ.hideFor=0;bdQuery(true);
+  }).catch(function(){BQ.busy=false;toast("تعذّر الاتصال بالسيرفر")});
+}
+function bdV(){
+  var el=$("board");if(!el)return;
+  var inp='padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;min-width:0;width:100%;box-sizing:border-box';
+  var rows=BQ.rows;
+  var h='<h1 style="font-size:19px">📊 المتابعة</h1>'+
+    '<div class="card"><b>🔍 استعلام</b><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0">'+
+    BQ_ST.map(function(x){return '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-bqst="'+x[0]+'"'+(BQ.states[x[0]]?' checked':'')+' style="width:18px;height:18px"> '+x[1]+'</label>'}).join("")+'</div>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-weight:700;color:#b42318"><input type="checkbox" id="bqLate"'+(BQ.late?' checked':'')+' style="width:20px;height:20px"> ⏰ المتأخر بس</label>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">'+
+      '<div><span class="mute" style="display:block;margin-bottom:3px">رقم الأوردر</span><input id="bqOrder" inputmode="numeric" value="'+esc(BQ.order)+'" placeholder="كله" style="'+inp+'"></div>'+
+      '<div><span class="mute" style="display:block;margin-bottom:3px">المندوب</span><select id="bqCourier" style="'+inp+'"><option value="">كل المناديب</option>'+BQ.couriers.map(function(c){return '<option value="'+c.id+'"'+(String(BQ.courier)===String(c.id)?' selected':'')+'>'+esc(c.name)+'</option>'}).join("")+'</select></div>'+
+      '<div style="grid-column:1/3"><span class="mute" style="display:block;margin-bottom:3px">تاريخ "تم التسليم"</span><input id="bqDate" type="date" value="'+esc(BQ.date||todayStr())+'" style="'+inp+'"></div></div>'+
+    '<button class="big" id="bqGo" style="margin-top:10px">🔍 استعلام</button></div>';
+  if(rows===null){el.innerHTML=h+'<p class="mute">جارِ التحميل...</p>';return}
+  if(BQ.err){el.innerHTML=h+'<div class="card"><b>⚠️ '+esc(BQ.err)+'</b><p class="mute" style="margin:6px 0 0">هنحاول تاني لوحدنا، أو اضغط "استعلام".</p></div>';return}
+  var sel=bdSel();
+  h+='<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px"><b>النتيجة: '+rows.length+' أوردر</b>'+
+    (rows.length?'<span style="flex:1"></span><button type="button" class="chip" id="bqUp">▲</button><button type="button" class="chip" id="bqDown">▼</button><span class="mute">'+((rows.findIndex(function(o){return o.id===BQ.selId})+1)||0)+' / '+rows.length+'</span>':'')+'</div>';
+  if(!rows.length){el.innerHTML=h+'<p class="mute">مفيش أوردرات بالاختيار ده'+(BQ.late?' (جرّب تشيل "المتأخر بس")':'')+' 👍</p>';return}
+  h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;white-space:nowrap"><tr><th>#</th><th>العميل</th><th>المنطقة</th><th>المبلغ</th><th>الحالة</th><th>منذ</th><th>التأخير</th><th>المسؤول</th></tr>'+
+    rows.map(function(o){
+      var on=o.id===BQ.selId;
+      var late=o.late_min>0?'<b style="color:#b42318">⏰ '+o.late_min+' د</b>':(o.remaining_min!=null&&o.phase!=="delivered"?'<span class="mute">باقي '+o.remaining_min+' د</span>':'—');
+      var who=o.assignee_name?esc(o.assignee_name):(o.needs_assignee?'<span style="color:var(--t)">— لم يُعيَّن —</span>':'—');
+      return '<tr data-bqrow="'+o.id+'" style="cursor:pointer;'+(on?'background:var(--g2);outline:2px solid var(--g)':'')+'"><td><b>#'+o.id+'</b></td><td>'+esc(o.customer_name)+'</td><td>'+esc(o.zone_name||"")+'</td><td>'+o.total+'</td><td>'+BQ_PH[o.phase]+'</td><td>'+o.age_min+' د</td><td>'+late+'</td><td><b>'+who+'</b></td></tr>'}).join("")+'</table></div>';
+  if(sel){
+    h+='<div class="card"><b>أوردر #'+sel.id+'</b> — '+BQ_PH[sel.phase]+(sel.late_min>0?' <b style="color:#b42318">⏰ متأخر '+sel.late_min+' د</b>':'')+
+      '<br>👤 '+esc(sel.customer_name)+(sel.customer_phone?' · '+esc(sel.customer_phone):'')+
+      (sel.customer_address?'<br>📍 '+esc(sel.customer_address)+(sel.zone_name?' ('+esc(sel.zone_name)+')':''):'')+
+      '<br><span class="mute">'+(sel.items||[]).map(function(i){return esc(i.emoji)+' '+esc(i.name)+' × '+i.quantity+(i.is_gift?' 🎁 هدية':'')}).join('، ')+'</span>'+
+      '<br><b>'+sel.total+' ج.م</b> · <span class="mute">من '+sel.age_min+' د</span>'+
+      '<br>'+(sel.phase==="awaiting_prep"||sel.phase==="preparing"?'🧑‍🍳 موظف التجهيز: ':'🛵 المندوب: ')+'<b>'+(sel.assignee_name?esc(sel.assignee_name):'لم يُعيَّن')+'</b></div>';
+  }
+  var c=BQ.cand;
+  if(c&&ROLE==="ops"&&sel&&sel.needs_assignee){
+    var ST_P={free:"فاضي ✅",busy:"معاه أوردر"},ST_C={free:"فاضي ✅",on_trip:"في رحلة",reserved:"محجوز لرحلة تانية",off:"مش على الدوام"};
+    h+='<div class="card" style="border:2px solid var(--g)"><b>'+(c.kind==="prep"?'🧑‍🍳 اختار موظف التجهيز':'🛵 اختار المندوب')+'</b>'+
+      '<p class="mute" style="margin:4px 0 8px">'+(c.mode==="free"?'الفاضيين دلوقتي:':'مفيش حد فاضي. دول مرتبين حسب مين هيخلص اللي في إيده الأول:')+'</p>'+
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th>الاسم</th><th>الحالة</th><th>يخلص بعد</th></tr>'+
+      c.candidates.map(function(x,i){
+        var st=(c.kind==="prep"?ST_P:ST_C)[x.state]||x.state;if(c.kind==="prep"&&x.state==="busy"&&x.open_orders>1)st="معاه "+x.open_orders+" أوردر";
+        return '<tr data-bqcand="'+x.id+'" style="cursor:pointer;'+(i===BQ.cursor?'background:var(--g2);outline:2px solid var(--g)':'')+'"><td><b>'+esc(x.name)+'</b></td><td>'+st+'</td><td>'+(x.state==="free"?'—':(x.eta_min!=null?'~'+x.eta_min+' د':'—'))+'</td></tr>'}).join("")+'</table></div>'+
+      '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button type="button" class="chip" id="bqCUp">▲</button><button type="button" class="chip" id="bqCDown">▼</button>'+
+      '<button class="big" id="bqCGo" style="flex:1;min-width:140px">⏎ تعيين المحدد</button><button type="button" class="chip" id="bqCHide">✕ إخفاء</button></div>'+
+      '<p class="mute" style="font-size:12px;margin:8px 0 0">من الكيبورد: ⬆⬇ للتنقل، Enter للتعيين (بيتحفظ لوحده)، Esc للإخفاء.</p></div>';
+  }
+  el.innerHTML=h;
+  if(BQ.scroll){BQ.scroll=false;var tr=el.querySelector('tr[data-bqrow="'+BQ.selId+'"]');if(tr&&tr.scrollIntoView&&BQ.focus==="rows")tr.scrollIntoView({block:"nearest"});
+    var cr=el.querySelector('tr[data-bqcand].sel');}
+}
+// rows are tapped (not buttons): own click listener
+document.addEventListener("click",function(e){
+  if(!e.target||!e.target.closest)return;
+  var cr=e.target.closest("[data-bqcand]");
+  if(cr){var ids=(BQ.cand&&BQ.cand.candidates)||[],k=ids.findIndex(function(x){return String(x.id)===cr.dataset.bqcand});if(k>=0){BQ.cursor=k;BQ.focus="cands";bdV()}return}
+  var rr=e.target.closest("[data-bqrow]");
+  if(rr)bdPick(Number(rr.dataset.bqrow));
+});
+document.addEventListener("keydown",function(e){
+  if(typeof CUR_TAB==="undefined"||CUR_TAB!=="board"||BQ.rows===null)return;
+  var tg=(e.target&&e.target.tagName)||"";
+  if(e.target&&e.target.id==="bqOrder"&&e.key==="Enter"){BQ.order=e.target.value.trim();bdQuery(false);e.preventDefault();return}
+  if(/INPUT|SELECT|TEXTAREA/.test(tg))return;   // typing in a field: leave the keys alone
+  if(e.key==="ArrowDown"||e.key==="ArrowUp"){var d=e.key==="ArrowDown"?1:-1;if(BQ.focus==="cands"&&BQ.cand)bdCursor(d);else bdMove(d);e.preventDefault()}
+  else if(e.key==="Enter"){if(BQ.focus==="cands"&&BQ.cand){bdAssignCursor();e.preventDefault()}}
+  else if(e.key==="Escape"){if(BQ.focus==="cands"){bdHideList();e.preventDefault()}}
+});
+document.addEventListener("change",function(e){
+  var t=e.target;if(!t)return;
+  if(t.dataset&&t.dataset.bqst){BQ.states[t.dataset.bqst]=t.checked;bdQuery(false);return}
+  if(t.id==="bqLate"){BQ.late=t.checked;bdQuery(false);return}
+  if(t.id==="bqCourier"){BQ.courier=t.value;bdQuery(false);return}
+  if(t.id==="bqDate"){BQ.date=t.value;bdQuery(false);return}
+});
+document.addEventListener("input",function(e){if(e.target&&e.target.id==="bqOrder")BQ.order=e.target.value.trim()});
 /* ---------- team (admin) ---------- */
 var TM=[],editId=0,SMS_ON=false,ACT_REQ=false;
 var TMF={idx:0,showAdd:false,focusId:0};
@@ -326,6 +421,10 @@ function teamV(){
 /* ---------- ops manager: assign orders to prep / delivery staff ---------- */
 var OPS={orders:null,staff:null,onlyUn:true,trips:null,sel:{}};
 function opsLoad(){
+  if(ROLE==="admin"){   // the admin only sees the settings: assigning orders is the ops manager's job
+    apiCall("GET","/trips/ops").then(function(r){OPS.trips=(r&&r.trips)?r:{trips:[],couriers:[],settings:{}};opsV()}).catch(function(){});
+    return;
+  }
   Promise.all([
     apiCall("GET","/orders/ops").then(function(r){OPS.orders=Array.isArray(r)?r:[]}),
     apiCall("GET","/staff/assignable").then(function(r){OPS.staff=(r&&r.prep)?r:{prep:[],delivery:[]}}),
@@ -375,6 +474,10 @@ function tripsBlock(){
       (open?'<select data-tasg="'+t.id+'" style="margin-top:8px">'+opts+'</select>':'')+
       (t.status==="assigned"?'<button class="big" style="margin-top:8px" data-tstart="'+t.id+'">▶ بدأت</button>':'')+'</div>';
   }).join(''):'<p class="mute">لا توجد رحلات مفتوحة.</p>';
+  return h+tripSettingsCard();
+}
+function tripSettingsCard(){
+  var s=(OPS.trips&&OPS.trips.settings)||{},h='';
   var canEdit=(ROLE==="ops"),ro=canEdit?'':' disabled';
   function num(id,v){return '<input type="number" id="'+id+'" value="'+(v===undefined?'':v)+'"'+ro+' style="width:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">'}
   function row(label,ctl){return '<div style="margin-top:12px"><div style="line-height:1.5">'+label+'</div><div style="margin-top:6px">'+ctl+'</div></div>'}
@@ -386,6 +489,7 @@ function tripsBlock(){
     row('أقصى تأخير للمندوب بعد "تمام" (دقيقة، تتحسب من جاهزية الأوردر)',num("tsDelay",s.courier_max_delay_min))+
     row('مهلة تجميع الأوردرات في رحلة (دقيقة، 0 = من غير مهلة)',num("tsBundle",s.trip_bundle_window_min))+
     row('مهلة التنبيه قبل ما الرحلة تتحوّل لمندوب تاني (دقيقة بعد ما نبّهناه إنه اتأخر)',num("tsGrace",s.courier_late_grace_min))+
+    row('مدة تحديث شاشة المتابعة تلقائياً (بالثواني، من 5 لـ 600)',num("tsRefresh",s.ops_refresh_sec))+
     row('لو اتأخر عن المدة دي','<select id="tsLate"'+ro+' style="'+selSt+'"><option value="auto"'+(s.courier_late_action!=="manual"?' selected':'')+'>النظام يحوّله أوتوماتيك لمندوب تاني</option><option value="manual"'+(s.courier_late_action==="manual"?' selected':'')+'>المدير يختار (إشعار فقط)</option></select>')+
     '<p class="mute" style="margin:12px 0 0">في الحالتين تقدر تعيّن مندوب تاني بنفسك في أي وقت، والتغيير بيتسجل باسمك.</p>'+
     (canEdit?'<button class="big" id="tsSave" style="margin-top:10px">حفظ الإعدادات</button>':'')+'</div>';
@@ -396,6 +500,10 @@ function tripAct(method,url,body,okMsg){
 }
 function opsV(){
   var el=$("ops");if(!el)return;
+  if(ROLE==="admin"){
+    el.innerHTML='<h1 style="font-size:19px">⚙️ إعدادات التشغيل</h1>'+(OPS.trips?tripSettingsCard():'<p class="mute">جارِ التحميل...</p>');
+    return;
+  }
   if(!OPS.orders||!OPS.staff){el.innerHTML='<h1 style="font-size:19px">🗂️ التشغيل</h1><p class="mute">جارِ التحميل...</p>';return}
   var list=OPS.onlyUn?OPS.orders.filter(opsNeeds):OPS.orders;
   var html='<h1 style="font-size:19px">🗂️ التشغيل</h1>'+tripsBlock()+'<h2 style="font-size:15px;margin:14px 0 6px">🧑‍🍳 تعيين موظفي التجهيز</h2>'+
@@ -717,28 +825,58 @@ function catV(){
 }
 
 /* ---------- products (admin only) ---------- */
-var PR=[],editPid=0;
-function prodLoad(){apiCall("GET","/products").then(function(r){PR=Array.isArray(r)?r:[];prodV()}).catch(function(){})}
+var PR=[],PRF={cat:"",idx:0,mode:"view",focusId:0};
+function prodLoad(){
+  apiCall("GET","/products").then(function(r){PR=Array.isArray(r)?r:[];prodV()}).catch(function(){});
+  if(!CATL.length)apiCall("GET","/categories").then(function(r){CATL=Array.isArray(r)?r:[];prodV()}).catch(function(){});
+}
+function prodList(){return PRF.cat?PR.filter(function(p){return p.category===PRF.cat}):PR}
+// ONE form for everything: query (walk through the products, optionally one category), add (clears the fields) and save.
 function prodV(){
   var el=$("products");if(!el)return;
-  var e=PR.find(function(p){return p.id===editPid});
-  var catOpts=CATL.length?CATL.map(function(c){return '<option value="'+esc(c.name)+'">'+esc(c.name)+'</option>'}).join(''):'<option value="">أضف قسمًا أولًا من تبويب الأقسام</option>';
-  el.innerHTML='<h1 style="font-size:19px">🥕 إدارة المنتجات</h1>'+
-    (PR.length?PR.map(function(p){return '<div class="card row"><div><b>'+(p.emoji||"")+' '+esc(p.name)+'</b><br><span class="mute">'+p.price+' ج.م / '+esc(p.unit)+' · '+esc(p.category)+'</span></div><div><button class="chip" data-pe="'+p.id+'">تعديل</button> <button class="chip" style="color:var(--t)" data-pd="'+p.id+'">حذف</button></div></div>'}).join(''):'<p class="mute">لا توجد منتجات بعد.</p>')+
-    '<div class="card"><h2>'+(e?'تعديل منتج':'إضافة منتج جديد')+'</h2>'+
-    '<input id="pN" placeholder="اسم المنتج" value="'+esc(e&&e.name)+'">'+
-    '<input id="pE" placeholder="إيموجي (مثال 🍅)" value="'+esc(e&&e.emoji)+'">'+
-    '<input id="pImg" placeholder="رابط صورة (اختياري)" value="'+esc(e&&e.image_url)+'">'+
-    '<input id="pP" type="number" placeholder="السعر" value="'+(e?e.price:"")+'">'+
-    '<select id="pU"><option value="كيلو">كيلو</option><option value="حزمة">حزمة</option><option value="قطعة">قطعة</option></select>'+
-    '<select id="pC">'+catOpts+'</select>'+
-    (e?'':'<input id="pS" type="number" placeholder="الكمية الأولية بالمخزون" value="0">')+
-    '<input id="pLow" type="number" placeholder="الحد الحرج لإعادة الطلب (اختياري)" value="'+(e&&e.low_stock_threshold?e.low_stock_threshold:"")+'">'+
-    '<button class="big" id="pAdd">'+(e?'حفظ التعديل':'إضافة')+'</button>'+
-    (e?' <button class="chip" id="pCan" style="margin-top:8px">إلغاء</button>':'')+
-    '<p id="pErr" style="color:var(--t)"></p></div>';
-  if(e){$("pU").value=e.unit;$("pC").value=e.category}
+  var list=prodList();
+  if(PRF.focusId){var fi=list.findIndex(function(p){return p.id===PRF.focusId});if(fi>=0)PRF.idx=fi;PRF.focusId=0}
+  if(PRF.idx>=list.length)PRF.idx=list.length-1;
+  if(PRF.idx<0)PRF.idx=0;
+  var cur=list[PRF.idx]||null,isNew=PRF.mode==="new"||!cur,e=isNew?null:cur;
+  var cats=CATL.map(function(c){return c.name});
+  PR.forEach(function(p){if(cats.indexOf(p.category)<0)cats.push(p.category)});
+  var cnt=function(c){return PR.filter(function(p){return p.category===c}).length};
+  var catOpts=cats.length?cats.map(function(c){return '<option value="'+esc(c)+'">'+esc(c)+'</option>'}).join(''):'<option value="">أضف قسمًا أولًا من تبويب الأقسام</option>';
+  function fld(label,inner){return '<label class="mute" style="display:block;margin:10px 0 3px">'+label+'</label>'+inner}
+  var h='<h1 style="font-size:19px">🥕 المنتجات</h1>'+
+    '<div class="card"><b>🔍 استعلام</b>'+
+    fld('القسم (اختار قسم عشان تشوف منتجاته بس)','<select id="prCat" style="width:100%"><option value="">كل الأقسام ('+PR.length+')</option>'+cats.map(function(c){return '<option value="'+esc(c)+'"'+(PRF.cat===c?' selected':'')+'>'+esc(c)+' ('+cnt(c)+')</option>'}).join('')+'</select>')+
+    (list.length&&PRF.mode!=="new"?
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:10px"><button type="button" class="chip" data-prnav="prev"'+(PRF.idx<=0?' disabled':'')+'>▶ السابق</button>'+
+      '<select id="prSel" style="flex:1;min-width:0">'+list.map(function(p,i){return '<option value="'+i+'"'+(i===PRF.idx?' selected':'')+'>'+esc((p.emoji||"")+" "+p.name)+'</option>'}).join('')+'</select>'+
+      '<button type="button" class="chip" data-prnav="next"'+(PRF.idx>=list.length-1?' disabled':'')+'>التالي ◀</button></div>'+
+      '<p class="mute" style="text-align:center;margin:6px 0 0">منتج '+(PRF.idx+1)+' من '+list.length+(PRF.cat?' في قسم '+esc(PRF.cat):'')+'</p>':
+      '<p class="mute" style="margin:8px 0 0">'+(PRF.mode==="new"?'بتضيف منتج جديد دلوقتي.':'مفيش منتجات'+(PRF.cat?' في القسم ده':'')+' لسه.')+'</p>')+
+    '</div>'+
+    '<div class="card"><h2>'+(isNew?'➕ منتج جديد':esc((e.emoji||"")+" "+e.name))+'</h2>'+
+    fld('اسم المنتج','<input id="pN" autocomplete="off" value="'+esc(e&&e.name)+'">')+
+    fld('إيموجي (مثال 🍅)','<input id="pE" autocomplete="off" value="'+esc(e&&e.emoji)+'">')+
+    fld('رابط صورة (اختياري)','<input id="pImg" autocomplete="off" value="'+esc(e&&e.image_url)+'">')+
+    fld('السعر (ج.م)','<input id="pP" type="number" step="any" value="'+(e?e.price:"")+'">')+
+    fld('الوحدة','<select id="pU"><option value="كيلو">كيلو</option><option value="حزمة">حزمة</option><option value="قطعة">قطعة</option></select>')+
+    fld('القسم','<select id="pC">'+catOpts+'</select>')+
+    (isNew?fld('الكمية الأولية بالمخزون','<input id="pS" type="number" step="any" value="0">'):'<p class="mute" style="margin:10px 0 0">📦 المخزون الحالي: <b>'+e.stock_qty+' '+esc(e.unit)+'</b> (بيتغيّر من شاشة المخزون)</p>')+
+    fld('الحد الحرج لإعادة الطلب (اختياري)','<input id="pLow" type="number" step="any" value="'+(e&&e.low_stock_threshold?e.low_stock_threshold:"")+'">')+
+    '<p id="pErr" style="color:var(--t)"></p>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><button class="big" id="pSave" style="flex:1;min-width:120px">💾 حفظ</button>'+
+    '<button class="chip" id="pNew">➕ إضافة</button>'+
+    (!isNew?'<button class="chip" id="pDel" style="color:var(--t)">🗑 حذف</button>':'')+
+    (PRF.mode==="new"&&list.length?'<button class="chip" id="pCan">إلغاء</button>':'')+'</div></div>';
+  el.innerHTML=h;
+  $("pU").value=e?e.unit:"كيلو";
+  var cv=e?e.category:(PRF.cat||(cats[0]||""));if(cats.indexOf(cv)>=0)$("pC").value=cv;
 }
+document.addEventListener("change",function(ev){
+  var t=ev.target;if(!t)return;
+  if(t.id==="prCat"){PRF.cat=t.value;PRF.idx=0;PRF.mode="view";prodV()}
+  else if(t.id==="prSel"){PRF.idx=Number(t.value);PRF.mode="view";prodV()}
+});
 
 /* ---------- stock (admin only) ---------- */
 var STK={products:[],movements:[]};
@@ -1296,10 +1434,9 @@ setInterval(function(){
   if(document.hidden||!TOK)return;
   if(ROLE==="delivery"&&CUR_TAB==="driver")courierRefresh();
   if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="ops"&&!TS_DIRTY)opsLoad();
-  if((ROLE==="ops"||ROLE==="admin")&&CUR_TAB==="board")bdLoad();
 },15000);
 var TS_DIRTY=false;
-document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Grace|Bundle|Late)$/.test(e.target.id))TS_DIRTY=true});
+document.addEventListener("input",function(e){if(e.target&&/^ts(Max|Offer|Lead|Delay|Grace|Bundle|Late|Refresh)$/.test(e.target.id))TS_DIRTY=true});
 document.addEventListener("change",function(e){
   var t=e.target;
   if(t.dataset&&t.dataset.csel){CASH.sel[t.dataset.csel]=t.checked;cashV();return}
@@ -1311,7 +1448,6 @@ document.addEventListener("change",function(e){
     cashV();return;
   }
   if(t.id==="opsOnlyUn"){OPS.onlyUn=t.checked;opsV();return}
-  if(t.id==="bdLate"){BDL=t.checked;bdV();return}
   if(t.dataset&&t.dataset.tsel){OPS.sel[t.dataset.tsel]=t.checked;opsV();return}
   if(t.dataset&&t.dataset.tasg){if(t.value)tripAct("POST","/trips/"+t.dataset.tasg+"/assign",{courier_id:Number(t.value)},"تم تعيين المندوب");return}
   if(t.id==="actTog"){apiCall("PUT","/settings/activation",{required:t.checked}).then(function(r){if(r&&r.ok)ACT_REQ=r.required;else toast("تعذّر الحفظ");teamV()});return}
@@ -1328,6 +1464,13 @@ document.addEventListener("change",function(e){
 document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.dataset.t){go(t.dataset.t);return}
+  if(t.id==="bqGo"){BQ.order=($("bqOrder")?$("bqOrder").value.trim():BQ.order);bdQuery(false);return}
+  if(t.id==="bqUp"){bdMove(-1);return}
+  if(t.id==="bqDown"){bdMove(1);return}
+  if(t.id==="bqCUp"){bdCursor(-1);return}
+  if(t.id==="bqCDown"){bdCursor(1);return}
+  if(t.id==="bqCGo"){bdAssignCursor();return}
+  if(t.id==="bqCHide"){bdHideList();return}
   if(t.id==="cashRetry"){CASH.err="";CASH.pending=null;CASH.overview=null;cashV();cashLoad();return}
   if(t.dataset&&t.dataset.hview){HO.view=t.dataset.hview;HO.sel={};cashV();return}
   if(t.id==="hoRecv"||t.id==="hoNot"){
@@ -1552,7 +1695,7 @@ document.addEventListener("click",function(e){
   if(t.id==="acSave"){auditSave();return}
   if(t.id==="audCanc"){auditLoad("canc");return}
   if(t.id==="audAsg"){auditLoad("asg");return}
-  if(t.id==="tsSave"){TS_DIRTY=false;tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_grace_min:Number($("tsGrace").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
+  if(t.id==="tsSave"){TS_DIRTY=false;tripAct("PUT","/trips/settings",{courier_max_orders:Number($("tsMax").value),courier_offer_min:Number($("tsOffer").value),courier_lead_min:Number($("tsLead").value),courier_max_delay_min:Number($("tsDelay").value),courier_late_grace_min:Number($("tsGrace").value),ops_refresh_sec:Number($("tsRefresh").value),courier_late_action:$("tsLate").value,trip_bundle_window_min:Number($("tsBundle").value)},"تم حفظ الإعدادات");return}
 
   if(t.dataset.ce){editCid=Number(t.dataset.ce);catV();return}
   if(t.id==="cCan"){editCid=0;catV();return}
@@ -1578,20 +1721,25 @@ document.addEventListener("click",function(e){
     return;
   }
 
-  if(t.dataset.pe){editPid=Number(t.dataset.pe);prodV();return}
-  if(t.id==="pCan"){editPid=0;prodV();return}
-  if(t.dataset.pd){
-    if(!confirm("حذف هذا المنتج نهائيًا؟"))return;
-    apiCall("DELETE","/products/"+t.dataset.pd).then(function(r){if(r&&r.ok){toast("تم الحذف");prodLoad()}else alert((r&&r.message)||"تعذّر الحذف")}).catch(function(){toast("تعذّر الاتصال بالسيرفر")});
+  if(t.dataset.prnav){PRF.idx+=t.dataset.prnav==="next"?1:-1;PRF.mode="view";prodV();return}
+  if(t.id==="pNew"){PRF.mode="new";prodV();return}
+  if(t.id==="pCan"){PRF.mode="view";prodV();return}
+  if(t.id==="pDel"){
+    var dp=prodList()[PRF.idx];if(!dp)return;
+    if(!confirm("حذف «"+dp.name+"» نهائيًا؟"))return;
+    apiCall("DELETE","/products/"+dp.id).then(function(r){if(r&&r.ok){toast("تم الحذف");prodLoad()}else alert((r&&r.message)||"تعذّر الحذف")}).catch(function(){toast("تعذّر الاتصال بالسيرفر")});
     return;
   }
-  if(t.id==="pAdd"){
+  if(t.id==="pSave"){
+    var cp=prodList()[PRF.idx],pid=(PRF.mode==="new"||!cp)?0:cp.id;
     var pb={name:$("pN").value.trim(),emoji:$("pE").value.trim(),image_url:$("pImg").value.trim(),price:Number($("pP").value),unit:$("pU").value,category:$("pC").value,low_stock_threshold:Number($("pLow").value||0)};
     if(!pb.name||!pb.price){$("pErr").textContent="أكمل اسم المنتج والسعر";return}
-    if(!editPid)pb.stock_qty=Number($("pS").value||0);
-    var preq=editPid?apiCall("PUT","/products/"+editPid,pb):apiCall("POST","/products",pb);
+    if(!pb.category){$("pErr").textContent="اختار القسم (أضف قسم من تبويب الأقسام لو مفيش)";return}
+    if(!pid)pb.stock_qty=Number(($("pS")||{}).value||0);
+    var preq=pid?apiCall("PUT","/products/"+pid,pb):apiCall("POST","/products",pb);
     preq.then(function(r){
-      if(r.id){toast("تم الحفظ");editPid=0;prodLoad()}else{$("pErr").textContent=r.message||"تعذّر الحفظ"}
+      if(r&&r.id){toast("تم الحفظ ✅");PRF.mode="view";PRF.focusId=r.id;if(PRF.cat&&pb.category!==PRF.cat)PRF.cat="";prodLoad()}
+      else{$("pErr").textContent=(r&&r.message)||"تعذّر الحفظ"}
     }).catch(function(){$("pErr").textContent="تعذّر الاتصال بالسيرفر"});
     return;
   }

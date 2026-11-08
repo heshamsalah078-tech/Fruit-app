@@ -14,12 +14,35 @@
 //  * The ops manager starts a trip with one button ("بدأت"); that is when the delivery timer begins.
 
 const LOCK_KEY = 19001;
-const DEFAULTS = { courier_max_orders: 3, courier_offer_min: 2, courier_lead_min: 3, courier_max_delay_min: 30, courier_late_grace_min: 5 };
-const RANGES = { courier_max_orders: [1, 10], courier_offer_min: [1, 30], courier_lead_min: [0, 30], courier_max_delay_min: [5, 240], courier_late_grace_min: [1, 120] };
+const DEFAULTS = { courier_max_orders: 3, courier_offer_min: 2, courier_lead_min: 3, courier_max_delay_min: 30, courier_late_grace_min: 5, ops_refresh_sec: 30 };
+const RANGES = { courier_max_orders: [1, 10], courier_offer_min: [1, 30], courier_lead_min: [0, 30], courier_max_delay_min: [5, 240], courier_late_grace_min: [1, 120], ops_refresh_sec: [5, 600] };
 // What happens when a courier said "تمام" but didn't reach the store in time: 'auto' = the system moves the trip to the next courier,
 // 'manual' = only the ops manager is notified and he decides. Either way the ops manager can reassign at any time.
 const LATE_ACTIONS = ['auto', 'manual'];
 const OPEN_TRIP = ['unassigned', 'offering', 'assigned', 'on_the_way'];
+
+
+// ---- ranking of who can take an order (used by the ops follow-up screen) ----
+// FREE ones first (a prep worker idle the longest first; a courier on duty with no trip). If nobody is free: everybody, ordered by who is
+// expected to finish what he is doing SOONEST, then the next, and so on (busy_s = seconds until his current work is due).
+function etaMin(busy_s) { return busy_s == null ? null : Math.max(Math.ceil(Number(busy_s) / 60), 0); }
+function rankPrep(rows) {
+  const all = rows.map((x) => ({ id: x.id, name: x.name, state: x.open_orders > 0 ? 'busy' : 'free', open_orders: x.open_orders,
+                                 eta_min: x.open_orders > 0 ? etaMin(x.busy_s) : 0, last_done: x.last_done }));
+  const free = all.filter((c) => c.state === 'free').sort((a, b) => (a.last_done ? new Date(a.last_done).getTime() : 0) - (b.last_done ? new Date(b.last_done).getTime() : 0) || a.id - b.id);
+  if (free.length) return { mode: 'free', candidates: free };
+  const busy = all.sort((a, b) => ((a.eta_min == null) - (b.eta_min == null)) || (a.eta_min - b.eta_min) || (a.open_orders - b.open_orders) || a.id - b.id);
+  return { mode: 'busy', candidates: busy };
+}
+function rankCouriers(rows) {
+  const all = rows.map((x) => ({ id: x.id, name: x.name,
+    state: !x.on_duty ? 'off' : x.on_trip ? 'on_trip' : x.reserved ? 'reserved' : 'free', eta_min: x.on_trip ? etaMin(x.busy_s) : null }));
+  const free = all.filter((c) => c.state === 'free').sort((a, b) => a.id - b.id);
+  if (free.length) return { mode: 'free', candidates: free };
+  const rank = { on_trip: 0, reserved: 1, off: 2 };
+  const busy = all.sort((a, b) => (rank[a.state] - rank[b.state]) || ((a.eta_min == null) - (b.eta_min == null)) || (a.eta_min - b.eta_min) || a.id - b.id);
+  return { mode: 'busy', candidates: busy };
+}
 
 function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifyStaff, notifyAdmins }) {
   const router = express.Router();
@@ -629,7 +652,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
   });
 
   // Manual override (trial phase). Fully audited: who, which orders, to whom, previous courier.
-  router.post('/trips/:id/assign', requireAuth('admin', 'ops'), async (req, res) => {
+  router.post('/trips/:id/assign', requireAuth('ops'), async (req, res) => {   // assigning is the ops manager's job, not the admin's
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -752,7 +775,108 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
     } catch (e) { console.error('trips/settings', e.message); res.status(500).json({ error: 'failed', message: 'تعذّر الحفظ.' }); }
   });
 
+
+
+  // ---------- ops follow-up: who can take this order, and assigning him (the ops manager only) ----------
+  const PHASE_LABEL = { awaiting_prep: 'بانتظار التجهيز', preparing: 'التجهيز', awaiting_delivery: 'بانتظار التوصيل', on_the_way: 'في الطريق' };
+
+  router.get('/ops/order/:id/candidates', requireAuth('admin', 'ops'), async (req, res) => {
+    try {
+      const o = (await pool.query(
+        `SELECT o.id, o.status, o.trip_id, o.assigned_prep_id, t.status AS trip_status, t.courier_id AS trip_courier_id
+           FROM orders o LEFT JOIN trips t ON t.id = o.trip_id WHERE o.id = $1`, [Number(req.params.id)])).rows[0];
+      if (!o) return res.status(404).json({ error: 'not_found', message: 'الأوردر مش موجود.' });
+      const inPrep = o.status === 'awaiting_prep' || o.status === 'preparing';
+      if (!inPrep && o.status !== 'awaiting_delivery') return res.json({ kind: null, can_assign: false, candidates: [], mode: 'free' });
+      if (inPrep) {
+        if (o.assigned_prep_id) {
+          const n = await pool.query('SELECT name FROM staff WHERE id = $1', [o.assigned_prep_id]);
+          return res.json({ kind: 'prep', can_assign: false, assigned: { id: o.assigned_prep_id, name: n.rows[0] && n.rows[0].name }, candidates: [], mode: 'free' });
+        }
+        const st = await pool.query(
+          `SELECT s.id, s.name,
+                  (SELECT COUNT(*) FROM orders x WHERE x.assigned_prep_id = s.id AND x.status IN ('awaiting_prep','preparing'))::int AS open_orders,
+                  (SELECT EXTRACT(EPOCH FROM (MAX(x.prep_due_at) - now()))::int FROM orders x WHERE x.assigned_prep_id = s.id AND x.status IN ('awaiting_prep','preparing')) AS busy_s,
+                  (SELECT MAX(x.prepared_at) FROM orders x WHERE x.prep_staff_id = s.id) AS last_done
+             FROM staff s WHERE s.role = 'prep' AND s.active = true AND s.password_hash IS NOT NULL AND s.settlement_mode IS DISTINCT FROM 'suspended'`);
+        return res.json({ kind: 'prep', can_assign: true, ...rankPrep(st.rows) });
+      }
+      // ready for delivery
+      if (o.trip_courier_id && o.trip_status === 'assigned') {
+        const n = await pool.query('SELECT name FROM couriers WHERE id = $1', [o.trip_courier_id]);
+        return res.json({ kind: 'delivery', can_assign: false, assigned: { id: o.trip_courier_id, name: n.rows[0] && n.rows[0].name }, candidates: [], mode: 'free' });
+      }
+      if (!o.trip_id || !['unassigned', 'offering'].includes(o.trip_status)) return res.json({ kind: 'delivery', can_assign: false, candidates: [], mode: 'free' });
+      const cs = await pool.query(
+        `SELECT s.id, s.name, s.on_duty,
+                EXISTS (SELECT 1 FROM trips x WHERE x.courier_id = s.id AND x.status = 'on_the_way') AS on_trip,
+                EXISTS (SELECT 1 FROM trips x WHERE x.courier_id = s.id AND x.status = 'assigned') AS reserved,
+                (SELECT EXTRACT(EPOCH FROM (MAX(oo.delivery_due_at) - now()))::int FROM orders oo JOIN trips tt ON tt.id = oo.trip_id
+                  WHERE tt.courier_id = s.id AND tt.status = 'on_the_way' AND oo.status = 'on_the_way') AS busy_s
+           FROM couriers s WHERE s.active = true AND s.password_hash IS NOT NULL AND s.settlement_mode IS DISTINCT FROM 'suspended'`);
+      res.json({ kind: 'delivery', can_assign: true, ...rankCouriers(cs.rows) });
+    } catch (e) {
+      console.error('ops candidates', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر تحميل القايمة.' });
+    }
+  });
+
+  // Assign prep staff or a courier to an order. It only goes through if nobody has been assigned in the meantime: otherwise the
+  // answer is "already_assigned" with the name, and NOTHING changes (the screen may have been showing a stale list).
+  router.post('/ops/order/:id/assign', requireAuth('ops'), async (req, res) => {
+    const id = Number(req.params.id), kind = req.body.kind === 'delivery' ? 'delivery' : 'prep', sid = Number(req.body.staff_id);
+    if (!Number.isInteger(id) || !Number.isInteger(sid)) return res.status(400).json({ error: 'invalid', message: 'بيانات غير صحيحة.' });
+    const client = await pool.connect();
+    const fail = async (code, status, message) => { await client.query('ROLLBACK'); return res.status(status).json({ error: code, message }); };
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
+      const o = (await client.query('SELECT id, status, trip_id, assigned_prep_id FROM orders WHERE id = $1 FOR UPDATE', [id])).rows[0];
+      if (!o) return await fail('not_found', 404, 'الأوردر مش موجود.');
+      if (kind === 'prep') {
+        if (!['awaiting_prep', 'preparing'].includes(o.status)) return await fail('not_allowed', 409, 'الأوردر ده خرج من مرحلة التجهيز.');
+        if (o.assigned_prep_id) {
+          const n = await client.query('SELECT name FROM staff WHERE id = $1', [o.assigned_prep_id]);
+          return await fail('already_assigned', 409, `عفواً، تم تعيين ${(n.rows[0] && n.rows[0].name) || 'موظف'} لهذا الأوردر (${PHASE_LABEL[o.status]}).`);
+        }
+        const ok = await client.query(
+          `SELECT id FROM staff WHERE id = $1 AND role = 'prep' AND active = true AND password_hash IS NOT NULL AND settlement_mode IS DISTINCT FROM 'suspended'`, [sid]);
+        if (!ok.rows.length) return await fail('bad_target', 400, 'الموظف المختار غير مؤهل.');
+        await client.query(`UPDATE orders SET assigned_prep_id = $2, prep_assigned_at = now(), prep_assignment_mode = 'manual' WHERE id = $1`, [id, sid]);
+        await client.query(`INSERT INTO staff_audit (action, actor_id, target_id, details) VALUES ('orders_assigned', $1, $2, $3)`,
+          [req.user.id, sid, JSON.stringify({ order_ids: [id], prep: sid, via: 'follow-up' })]);
+        await client.query('COMMIT');
+        safe(notifyStaff([sid], { title: '🧑‍🍳 أوردر جديد ليك', body: `مدير التشغيل عيّن لك أوردر #${id}.`, tag: 'prep-' + id, url: '/staff/#store' }));
+        return res.json({ ok: true });
+      }
+      // delivery: through the order's trip
+      if (!o.trip_id) return await fail('not_allowed', 409, 'مفيش رحلة للأوردر ده.');
+      const t = await lockTrip(client, o.trip_id);
+      if (!t || t.status === 'on_the_way' || o.status === 'on_the_way') return await fail('not_allowed', 409, 'الأوردر في الطريق، مينفعش يتغيّر دلوقتي.');
+      if (t.status === 'assigned' && t.courier_id) {
+        const n = await client.query('SELECT name FROM couriers WHERE id = $1', [t.courier_id]);
+        return await fail('already_assigned', 409, `عفواً، تم تعيين ${(n.rows[0] && n.rows[0].name) || 'مندوب'} لهذا الأوردر (${PHASE_LABEL.awaiting_delivery}).`);
+      }
+      if (!['unassigned', 'offering'].includes(t.status)) return await fail('not_allowed', 409, 'لا يمكن تعيين مندوب لهذه الرحلة الآن.');
+      const ok = await client.query(
+        `SELECT id FROM couriers WHERE id = $1 AND active = true AND password_hash IS NOT NULL AND settlement_mode IS DISTINCT FROM 'suspended'`, [sid]);
+      if (!ok.rows.length) return await fail('bad_target', 400, 'المندوب المختار غير مؤهل.');
+      const gate = await canTakeDelivery(client, sid);
+      if (!gate.ok) return await fail('unsettled_cash', 403, `على المندوب ${gate.amount} ج.م لازم يسددها الأول.`);
+      const has = await client.query(`SELECT 1 FROM trips WHERE courier_id = $1 AND status = 'assigned' AND id <> $2`, [sid, t.id]);
+      if (has.rows.length) return await fail('courier_reserved', 409, 'المندوب ده محجوز لرحلة تانية بالفعل.');
+      await assignTrip(client, t.id, sid, 'manual', req.user.id, 'ops follow-up');
+      await client.query('COMMIT');
+      safe(notifyStaff([sid], { title: '🛵 اتعيّنت لرحلة', body: `مدير التشغيل عيّنك على رحلة #${t.id}.`, tag: 'manual-' + t.id, url: '/staff/#driver' }));
+      return res.json({ ok: true });
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      console.error('ops assign', e.message);
+      res.status(500).json({ error: 'failed', message: 'تعذّر التعيين.' });
+    } finally { client.release(); }
+  });
+
   return { router, run, kick, refreshTrip };
 }
 
-module.exports = { init };
+module.exports = { init, rankPrep, rankCouriers };
