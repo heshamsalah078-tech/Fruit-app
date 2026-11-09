@@ -148,7 +148,7 @@ function apiCall(method,path,body){
     return r.json().catch(function(){return{}})
   },function(e){if(tm)clearTimeout(tm);throw e});
 }
-var APP_VER="v30";
+var APP_VER="v31";
 function verCheck(){
   apiCall("GET","/version").then(function(r){
     var el=$("verLine");if(!el)return;
@@ -209,7 +209,7 @@ function go(t){
 /* ---------- follow-up (ops + admin): inquiry -> table you can walk through -> the list of who can take the order ---------- */
 function todayStr(){var d=new Date(new Date().toLocaleString("en-US",{timeZone:"Africa/Cairo"}));return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)}
 var BQ={states:{awaiting_prep:true,preparing:true,awaiting_delivery:true,on_the_way:true,delivered:false},late:true,date:"",order:"",courier:"",
-        rows:null,err:"",selId:0,focus:"rows",cand:null,cursor:0,hideFor:0,refreshSec:30,timer:null,timerSec:0,couriers:[],busy:false,seq:0,candSeq:0,scroll:false};
+        rows:null,err:"",showDetails:false,selId:0,focus:"rows",cand:null,cursor:0,hideFor:0,refreshSec:30,timer:null,timerSec:0,couriers:[],busy:false,seq:0,candSeq:0,scroll:false};
 var BQ_ST=[["awaiting_prep","بانتظار التجهيز"],["preparing","التجهيز"],["awaiting_delivery","بانتظار التوصيل"],["on_the_way","في الطريق"],["delivered","تم التسليم (النهارده)"]];
 var BQ_PH={awaiting_prep:"بانتظار التجهيز",preparing:"التجهيز",awaiting_delivery:"بانتظار التوصيل",on_the_way:"في الطريق",delivered:"تم التسليم"};
 function bdLoad(){bdQuery(false)}
@@ -309,7 +309,7 @@ function bdV(){
   if(BQ.err){el.innerHTML=h+'<div class="card"><b>⚠️ '+esc(BQ.err)+'</b><p class="mute" style="margin:6px 0 0">هنحاول تاني لوحدنا، أو اضغط "استعلام".</p></div>';return}
   var sel=bdSel();
   h+='<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px"><b>النتيجة: '+rows.length+' أوردر</b>'+
-    (rows.length?'<span style="flex:1"></span><button type="button" class="chip" id="bqUp">▲</button><button type="button" class="chip" id="bqDown">▼</button><span class="mute">'+((rows.findIndex(function(o){return o.id===BQ.selId})+1)||0)+' / '+rows.length+'</span>':'')+'</div>';
+    (rows.length?'<span style="flex:1"></span><button type="button" class="chip" id="bqDet">'+(BQ.showDetails?'إخفاء':'تفاصيل')+'</button><button type="button" class="chip" id="bqUp">▲</button><button type="button" class="chip" id="bqDown">▼</button><span class="mute">'+((rows.findIndex(function(o){return o.id===BQ.selId})+1)||0)+' / '+rows.length+'</span>':'')+'</div>';
   if(!rows.length){el.innerHTML=h+'<p class="mute">مفيش أوردرات بالاختيار ده'+(BQ.late?' (جرّب تشيل "المتأخر بس")':'')+' 👍</p>';return}
   h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;white-space:nowrap"><tr><th>#</th><th>العميل</th><th>المنطقة</th><th>المبلغ</th><th>الحالة</th><th>منذ</th><th>التأخير</th><th>المسؤول</th></tr>'+
     rows.map(function(o){
@@ -317,7 +317,7 @@ function bdV(){
       var late=o.late_min>0?'<b style="color:#b42318">⏰ '+o.late_min+' د</b>':(o.remaining_min!=null&&o.phase!=="delivered"?'<span class="mute">باقي '+o.remaining_min+' د</span>':'—');
       var who=o.assignee_name?esc(o.assignee_name):(o.needs_assignee?'<span style="color:var(--t)">— لم يُعيَّن —</span>':'—');
       return '<tr data-bqrow="'+o.id+'" style="cursor:pointer;'+(on?'background:var(--g2);outline:2px solid var(--g)':'')+'"><td><b>#'+o.id+'</b></td><td>'+esc(o.customer_name)+'</td><td>'+esc(o.zone_name||"")+'</td><td>'+o.total+'</td><td>'+BQ_PH[o.phase]+'</td><td>'+o.age_min+' د</td><td>'+late+'</td><td><b>'+who+'</b></td></tr>'}).join("")+'</table></div>';
-  if(sel){
+  if(sel&&BQ.showDetails){
     h+='<div class="card"><b>أوردر #'+sel.id+'</b> — '+BQ_PH[sel.phase]+(sel.late_min>0?' <b style="color:#b42318">⏰ متأخر '+sel.late_min+' د</b>':'')+
       '<br>👤 '+esc(sel.customer_name)+(sel.customer_phone?' · '+esc(sel.customer_phone):'')+
       (sel.customer_address?'<br>📍 '+esc(sel.customer_address)+(sel.zone_name?' ('+esc(sel.zone_name)+')':''):'')+
@@ -331,6 +331,7 @@ function bdV(){
     h+='<div class="card" style="border:2px solid var(--g)"><b>'+(c.kind==="prep"?'🧑‍🍳 ':'🛵 ')+(c.assigned?'غيّر ':'اختار ')+(c.kind==="prep"?'موظف التجهيز':'المندوب')+'</b>'+
       (c.assigned?'<p style="margin:4px 0 0">المسؤول حالياً: <b>'+esc(c.assigned.name||"—")+'</b></p>':'')+
       '<p class="mute" style="margin:4px 0 8px">'+(c.mode==="free"?'الفاضيين دلوقتي:':'مفيش حد فاضي. دول مرتبين حسب مين هيخلص اللي في إيده الأول:')+'</p>'+
+      (c.candidates.length?'':'<p style="color:var(--t);font-weight:700;margin:6px 0">'+(c.kind==="prep"?'كل موظفين التجهيز محجوزين دلوقتي.':'كل المناديب محجوزين لرحلات دلوقتي.')+' جرّب تاني بعد شوية.</p>')+
       '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><tr><th>الاسم</th><th>الحالة</th><th>يخلص بعد</th></tr>'+
       c.candidates.map(function(x,i){
         var st=(c.kind==="prep"?ST_P:ST_C)[x.state]||x.state;if(c.kind==="prep"&&x.state==="busy"&&x.open_orders>1)st="معاه "+x.open_orders+" أوردر";
@@ -1477,6 +1478,7 @@ document.addEventListener("click",function(e){
   var t=e.target.closest("button");if(!t)return;
   if(t.dataset.t){go(t.dataset.t);return}
   if(t.id==="bqGo"){BQ.order=($("bqOrder")?$("bqOrder").value.trim():BQ.order);bdQuery(false);return}
+  if(t.id==="bqDet"){BQ.showDetails=!BQ.showDetails;bdV();return}
   if(t.id==="bqUp"){bdMove(-1);return}
   if(t.id==="bqDown"){bdMove(1);return}
   if(t.id==="bqCUp"){bdCursor(-1);return}

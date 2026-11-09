@@ -96,7 +96,7 @@ app.use('/uploads', express.static(UPLOAD_DIR));
 app.get('/', (req, res) => res.sendFile(require('path').join(__dirname, 'index.html')));
 
 // Which build is running, and which database phases are NOT applied yet (shown on the staff login screen).
-const SERVER_VERSION = 'v30 · 2026-11-05';
+const SERVER_VERSION = 'v31 · 2026-11-05';
 app.get('/version', async (req, res) => {
   const out = { server: SERVER_VERSION, missing: [] };
   try {
@@ -395,6 +395,73 @@ app.post('/auth/staff-login', async (req, res) => {
   const staffMember = r.rows[0];
   const token = makeToken({ id: staffMember.id, role: staffMember.role, name: staffMember.name });
   res.json({ token, staff: { id: staffMember.id, name: staffMember.name, role: staffMember.role } });
+});
+
+// A customer corrects his own data (name / phone / address / zone). His OPEN orders (not delivered or cancelled yet) follow immediately:
+// the screens of ops and the courier read his name, phone and address live, and when the zone changes the delivery fee and the order total
+// are recalculated. Once an order is delivered it is not touched: it is history, and only the customer's own file changes.
+app.patch('/customers/me', requireAuth('customer'), async (req, res) => {
+  const cid = req.user.id;
+  const { name, phone, address, zone_id, verification_token } = req.body || {};
+  const nm = String(name || '').trim(), ad = String(address || '').trim(), phoneN = normPhone(phone);
+  if (!nm || !ad || phoneN.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'invalid', message: 'أدخل الاسم ورقم موبايل صحيح والعنوان.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = (await client.query('SELECT id, name, phone, address, zone_id FROM customers WHERE id = $1 FOR UPDATE', [cid])).rows[0];
+    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not_found', message: 'حسابك مش موجود.' }); }
+    const phoneChanged = normPhone(cur.phone) !== phoneN;
+    if (phoneChanged) {
+      const dup = await client.query('SELECT id FROM customers WHERE phone = ANY($1::text[]) AND id <> $2', [[String(phone).trim(), phoneN], cid]);
+      if (dup.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'phone_taken', message: 'الرقم ده مسجّل لعميل تاني.' }); }
+      const refCfg = await referral.getSettings();
+      if (refCfg.otp_enforced && !(await referral.isPhoneVerified(String(phone).trim(), verification_token))) {
+        await client.query('ROLLBACK'); return res.status(403).json({ error: 'otp_required', message: 'تغيير رقم الموبايل محتاج تأكيد بكود SMS.' });
+      }
+    }
+    let newZone = null;
+    if (zone_id && Number(zone_id) !== Number(cur.zone_id)) {
+      const z = await client.query('SELECT id, name, fee FROM delivery_zones WHERE id = $1 AND active = true', [Number(zone_id)]);
+      if (!z.rows.length) { await client.query('ROLLBACK'); return res.status(422).json({ error: 'out_of_area', message: zones.OUT_OF_AREA }); }
+      newZone = z.rows[0];
+    }
+    const upd = await client.query(
+      `UPDATE customers SET name = $1, phone = $2, address = $3, zone_id = COALESCE($4, zone_id) WHERE id = $5 RETURNING id, name, phone, address, zone_id`,
+      [nm, phoneChanged ? phoneN : cur.phone, ad, newZone ? newZone.id : null, cid]);
+    const open = await client.query(
+      `SELECT o.id, o.zone_id, o.zone_fee, o.delivery_fee, o.total, COALESCE(o.delivery_staff_id, t.courier_id, o.assigned_delivery_id) AS courier_id
+         FROM orders o LEFT JOIN trips t ON t.id = o.trip_id
+        WHERE o.customer_id = $1 AND o.status NOT IN ('delivered','cancelled') FOR UPDATE OF o`, [cid]);
+    const totals = [];
+    if (newZone) {
+      for (const o of open.rows) {
+        if (Number(o.zone_id) === Number(newZone.id)) continue;
+        const newFee = Number(newZone.fee);
+        const freeOffer = Number(o.delivery_fee) === 0 && Number(o.zone_fee) > 0;   // a free-delivery offer was applied: it stays free, the company absorbs the new zone price
+        const newDelivery = freeOffer ? 0 : newFee;
+        const newTotal = Math.max(Math.round((Number(o.total) - Number(o.delivery_fee) + newDelivery) * 100) / 100, 0);
+        await client.query(`UPDATE orders SET zone_id = $2, zone_name = $3, zone_fee = $4, delivery_fee = $5, total = $6 WHERE id = $1`, [o.id, newZone.id, newZone.name, newFee, newDelivery, newTotal]);
+        await client.query(`UPDATE order_offers SET free_delivery_cost = $2 WHERE order_id = $1 AND free_delivery_cost > 0`, [o.id, newFee]);
+        totals.push({ order_id: o.id, total: newTotal });
+      }
+    }
+    await client.query('COMMIT');
+    // tell the people who handle his open orders (the courier needs the location and the phone to reach him)
+    const changes = [nm !== cur.name ? 'الاسم' : null, phoneChanged ? 'رقم الموبايل' : null, ad !== cur.address ? 'العنوان' : null, newZone ? 'المنطقة' : null].filter(Boolean);
+    if (open.rows.length && changes.length) {
+      const couriers = [...new Set(open.rows.map((o) => o.courier_id).filter(Boolean))];
+      const ops = (await pool.query(`SELECT id FROM staff WHERE role = 'ops' AND active = true`)).rows.map((x) => x.id);
+      const body = `${upd.rows[0].name} عدّل (${changes.join('، ')}) — أوردر ${open.rows.map((o) => '#' + o.id).join(' و')}. راجع البيانات الجديدة.`;
+      if (couriers.length) notifyStaff(couriers, { title: '📍 العميل عدّل بياناته', body, tag: 'cust-edit-' + cid, url: '/staff/#driver' }).catch(() => {});
+      if (ops.length) notifyStaff(ops, { title: '📍 عميل عدّل بياناته', body, tag: 'cust-edit-ops-' + cid, url: '/staff/#board' }).catch(() => {});
+    }
+    const c = upd.rows[0];
+    res.json({ ok: true, customer: { id: c.id, name: c.name, phone: c.phone, address: c.address, zone_id: c.zone_id }, orders_updated: open.rows.length, totals });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('customers/me failed', e.message);
+    res.status(500).json({ error: 'failed', message: 'تعذّر حفظ بياناتك.' });
+  } finally { client.release(); }
 });
 
 app.get('/customers/:phone', requireAuth('admin'), async (req, res) => {

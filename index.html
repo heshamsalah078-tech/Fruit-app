@@ -602,6 +602,17 @@ document.addEventListener("click",function(e){
     if(!n1||p1.replace(/\D/g,"").length<10||!a1){toast("أدخل الاسم ورقم موبايل صحيح والعنوان");return}
     if(!z1){toast("اختر منطقتك من القايمة");return}
     t.disabled=true;
+    if(editing&&me.id&&TOK){   // a registered customer correcting his data: phone included. His open order follows (address, phone, delivery fee).
+      apiCall("PATCH","/customers/me",{name:n1,phone:p1,address:a1,zone_id:z1}).then(function(r){
+        t.disabled=false;
+        if(r&&r.ok&&r.customer){
+          me={id:r.customer.id,name:r.customer.name,phone:r.customer.phone,addr:r.customer.address,zone_id:r.customer.zone_id||0};syncFee();saveMe();hello();
+          editing=false;refreshMyOrders();
+          toast(r.orders_updated?"تم الحفظ، وبيانات أوردرك الحالي اتحدّثت":"تم الحفظ، أهلاً "+n1);go("shop");
+        }else toast((r&&r.message)||"تعذّر حفظ بياناتك");
+      }).catch(function(){t.disabled=false;toast("تعذّر الاتصال بالخادم")});
+      return;
+    }
     identifyCustomer(n1,p1,a1,function(){t.disabled=false;editing=false;toast("تم الحفظ، أهلاً "+n1);go("shop")},function(msg){t.disabled=false;toast(msg)},z1);
   }
   else if(t.id==="editme"){editing=true;draw()}

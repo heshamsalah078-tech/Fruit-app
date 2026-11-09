@@ -27,20 +27,23 @@ const OPEN_TRIP = ['unassigned', 'offering', 'assigned', 'on_the_way'];
 // expected to finish what he is doing SOONEST, then the next, and so on (busy_s = seconds until his current work is due).
 function etaMin(busy_s) { return busy_s == null ? null : Math.max(Math.ceil(Number(busy_s) / 60), 0); }
 function rankPrep(rows, currentId) {
-  const all = rows.map((x) => ({ id: x.id, name: x.name, state: x.open_orders > 0 ? 'busy' : 'free', open_orders: x.open_orders,
-                                 eta_min: x.open_orders > 0 ? etaMin(x.busy_s) : 0, last_done: x.last_done, current: currentId != null && Number(x.id) === Number(currentId) }));
+  const isCur = (x) => currentId != null && Number(x.id) === Number(currentId);
+  // a prep worker who already has an order WAITING for him (assigned, not started) is reserved: he is not offered at all
+  const all = rows.filter((x) => !(x.queued > 0) || isCur(x)).map((x) => ({ id: x.id, name: x.name, state: x.open_orders > 0 ? 'busy' : 'free', open_orders: x.open_orders,
+                                 eta_min: x.open_orders > 0 ? etaMin(x.busy_s) : 0, last_done: x.last_done, current: isCur(x) }));
   const free = all.filter((c) => c.state === 'free').sort((a, b) => (a.last_done ? new Date(a.last_done).getTime() : 0) - (b.last_done ? new Date(b.last_done).getTime() : 0) || a.id - b.id);
   if (free.length) return { mode: 'free', candidates: free };
   const busy = all.sort((a, b) => ((a.eta_min == null) - (b.eta_min == null)) || (a.eta_min - b.eta_min) || (a.open_orders - b.open_orders) || a.id - b.id);
   return { mode: 'busy', candidates: busy };
 }
 function rankCouriers(rows, currentId) {
-  const all = rows.map((x) => ({ id: x.id, name: x.name,
-    state: !x.on_duty ? 'off' : x.on_trip ? 'on_trip' : x.reserved ? 'reserved' : 'free', eta_min: x.on_trip ? etaMin(x.busy_s) : null,
-    current: currentId != null && Number(x.id) === Number(currentId) }));
+  const isCur = (x) => currentId != null && Number(x.id) === Number(currentId);
+  // a courier already booked for a trip that has not left is reserved: he is not offered at all
+  const all = rows.filter((x) => !x.reserved || isCur(x)).map((x) => ({ id: x.id, name: x.name,
+    state: !x.on_duty ? 'off' : x.on_trip ? 'on_trip' : 'free', eta_min: x.on_trip ? etaMin(x.busy_s) : null, current: isCur(x) }));
   const free = all.filter((c) => c.state === 'free').sort((a, b) => a.id - b.id);
   if (free.length) return { mode: 'free', candidates: free };
-  const rank = { on_trip: 0, reserved: 1, off: 2 };
+  const rank = { on_trip: 0, off: 1, free: 2 };
   const busy = all.sort((a, b) => (rank[a.state] - rank[b.state]) || ((a.eta_min == null) - (b.eta_min == null)) || (a.eta_min - b.eta_min) || a.id - b.id);
   return { mode: 'busy', candidates: busy };
 }
@@ -795,6 +798,7 @@ function init({ pool, requireAuth, express, canTakeDelivery, moveStock, notifySt
         const st = await pool.query(
           `SELECT s.id, s.name,
                   (SELECT COUNT(*) FROM orders x WHERE x.assigned_prep_id = s.id AND x.id <> $1 AND x.status IN ('awaiting_prep','preparing'))::int AS open_orders,
+                  (SELECT COUNT(*) FROM orders x WHERE x.assigned_prep_id = s.id AND x.id <> $1 AND x.status = 'awaiting_prep')::int AS queued,
                   (SELECT EXTRACT(EPOCH FROM (MAX(x.prep_due_at) - now()))::int FROM orders x WHERE x.assigned_prep_id = s.id AND x.id <> $1 AND x.status IN ('awaiting_prep','preparing')) AS busy_s,
                   (SELECT MAX(x.prepared_at) FROM orders x WHERE x.prep_staff_id = s.id) AS last_done
              FROM staff s WHERE s.role = 'prep' AND s.active = true AND s.password_hash IS NOT NULL AND s.settlement_mode IS DISTINCT FROM 'suspended'`, [oid]);
